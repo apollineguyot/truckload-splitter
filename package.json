@@ -1,0 +1,15 @@
+{
+  "name": "truckload-splitter",
+  "version": "1.0.0",
+  "description": "Shopify webhook server that splits orders into truckloads",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "body-parser": "^1.20.3",
+    "express": "^4.19.2",
+    "node-fetch": "^2.7.0"
+  }
+}
