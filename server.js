@@ -107,16 +107,22 @@ app.post("/webhooks/orders/create", async (req, res) => {
                 quantity: qty,
               },
             ],
-            customer: order.customer ? {
-              id: order.customer.id,
-              email: order.customer.email,
-              first_name: order.customer.first_name,
-              last_name: order.customer.last_name,
-              phone: order.customer.phone,
-            } : undefined,
-            shipping_address: order.shipping_address,
-            billing_address: order.billing_address,
-            email: order.email,
+            customer: order.customer && typeof order.customer === "object"
+              ? {
+                  id: order.customer.id,
+                  email: order.customer.email,
+                  first_name: order.customer.first_name,
+                  last_name: order.customer.last_name,
+                  phone: order.customer.phone,
+                }
+              : undefined,
+            shipping_address: order.shipping_address && typeof order.shipping_address === "object"
+              ? order.shipping_address
+              : undefined,
+            billing_address: order.billing_address && typeof order.billing_address === "object"
+              ? order.billing_address
+              : undefined,
+            email: typeof order.email === "string" ? order.email : undefined,
             note: `Split from original order #${order.name} (ID: ${order.id})`,
             tags: [`Split-Child`, `Truckload ${i + 1}`, `Parent-${order.name}`],
           },
@@ -195,3 +201,4 @@ app.post("/webhooks/orders/create", async (req, res) => {
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });
+
