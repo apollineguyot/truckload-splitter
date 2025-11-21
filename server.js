@@ -129,4 +129,69 @@ app.post("/webhooks/orders/create", async (req, res) => {
               method: "POST",
               headers: {
                 "Content-Type": "application/json",
-                "X-Shopify-Access
+                "X-Shopify-Access-Token": ACCESS_TOKEN,
+              },
+              body: JSON.stringify(newOrderPayload),
+            }
+          );
+
+          const createdOrder = await createResp.json();
+          if (!createResp.ok) {
+            console.error(
+              `❌ Failed to create split order ${i + 1}:`,
+              createResp.status,
+              JSON.stringify(createdOrder, null, 2)
+            );
+            continue;
+          }
+
+          console.log(`✅ Created split order ${i + 1}:`, JSON.stringify(createdOrder, null, 2));
+        } catch (err) {
+          console.error(`❌ Error creating split order ${i + 1}:`, err);
+          continue;
+        }
+      }
+    }
+
+    try {
+      const existingTags = (order.tags || "").trim();
+      const newTags = existingTags ? `${existingTags}, Split-Processed` : "Split-Processed";
+
+      const tagResp = await fetch(
+        `${shopBaseUrl}/admin/api/${API_VERSION}/orders/${order.id}.json`,
+        {
+          method: "PUT",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Shopify-Access-Token": ACCESS_TOKEN,
+          },
+          body: JSON.stringify({
+            order: {
+              id: order.id,
+              tags: newTags,
+            },
+          }),
+        }
+      );
+
+      const tagData = await tagResp.json();
+      if (!tagResp.ok) {
+        console.error("❌ Failed to tag original order:", tagResp.status, JSON.stringify(tagData, null, 2));
+      } else {
+        console.log("🔵 Original order tagged as Split-Processed");
+      }
+    } catch (err) {
+      console.error("❌ Error tagging original order:", err);
+    }
+
+    return res.status(200).send("Split processed");
+  } catch (err) {
+    console.error("❌ Error processing split:", err);
+    return res.status(500).send("Error");
+  }
+});
+
+// Start server
+app.listen(PORT, () => {
+  console.log(`🚀 Server running on port ${PORT}`);
+});
