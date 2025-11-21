@@ -107,7 +107,18 @@ app.post("/webhooks/orders/create", async (req, res) => {
                 quantity: qty,
               },
             ],
-            tags: [`Split-Child`, `Truckload ${i + 1}`],
+            customer: order.customer ? {
+              id: order.customer.id,
+              email: order.customer.email,
+              first_name: order.customer.first_name,
+              last_name: order.customer.last_name,
+              phone: order.customer.phone,
+            } : undefined,
+            shipping_address: order.shipping_address,
+            billing_address: order.billing_address,
+            email: order.email,
+            note: `Split from original order #${order.name} (ID: ${order.id})`,
+            tags: [`Split-Child`, `Truckload ${i + 1}`, `Parent-${order.name}`],
           },
         };
 
@@ -118,69 +129,4 @@ app.post("/webhooks/orders/create", async (req, res) => {
               method: "POST",
               headers: {
                 "Content-Type": "application/json",
-                "X-Shopify-Access-Token": ACCESS_TOKEN,
-              },
-              body: JSON.stringify(newOrderPayload),
-            }
-          );
-
-          const createdOrder = await createResp.json();
-          if (!createResp.ok) {
-            console.error(
-              `❌ Failed to create split order ${i + 1}:`,
-              createResp.status,
-              JSON.stringify(createdOrder, null, 2)
-            );
-            continue;
-          }
-
-          console.log(`✅ Created split order ${i + 1}:`, JSON.stringify(createdOrder, null, 2));
-        } catch (err) {
-          console.error(`❌ Error creating split order ${i + 1}:`, err);
-          continue;
-        }
-      }
-    }
-
-    try {
-      const existingTags = (order.tags || "").trim();
-      const newTags = existingTags ? `${existingTags}, Split-Processed` : "Split-Processed";
-
-      const tagResp = await fetch(
-        `${shopBaseUrl}/admin/api/${API_VERSION}/orders/${order.id}.json`,
-        {
-          method: "PUT",
-          headers: {
-            "Content-Type": "application/json",
-            "X-Shopify-Access-Token": ACCESS_TOKEN,
-          },
-          body: JSON.stringify({
-            order: {
-              id: order.id,
-              tags: newTags,
-            },
-          }),
-        }
-      );
-
-      const tagData = await tagResp.json();
-      if (!tagResp.ok) {
-        console.error("❌ Failed to tag original order:", tagResp.status, JSON.stringify(tagData, null, 2));
-      } else {
-        console.log("🔵 Original order tagged as Split-Processed");
-      }
-    } catch (err) {
-      console.error("❌ Error tagging original order:", err);
-    }
-
-    return res.status(200).send("Split processed");
-  } catch (err) {
-    console.error("❌ Error processing split:", err);
-    return res.status(500).send("Error");
-  }
-});
-
-// Start server
-app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-});
+                "X-Shopify-Access
