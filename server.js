@@ -43,7 +43,26 @@ app.post("/webhooks/orders/create", async (req, res) => {
         },
       }
     );
+  // ✅ Parse the response
+  const metaData = await metaResp.json();
+  const metafield = metaData.metafields.find(
+    (m) => m.namespace === "custom" && m.key === "truckload_capacity"
+  );
+  const truckloadCapacity = parseInt(metafield?.value, 10);
 
+  // Debug logs
+  console.log("📦 Parsed truckload capacity:", truckloadCapacity);
+  console.log("📦 Quantity:", item.quantity);
+
+  // ✅ Run split logic only if needed
+  if (!truckloadCapacity || item.quantity <= truckloadCapacity) {
+    console.log("🚫 No split needed");
+    continue;
+      }
+
+  // Your existing split logic goes here...
+}
+  
     const metaData = await metaResp.json();
     console.log("📑 Product metafields:", JSON.stringify(metaData, null, 2));
 
