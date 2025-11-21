@@ -32,9 +32,11 @@ app.post("/webhooks/orders/create", async (req, res) => {
       console.log("⚠️ Invalid line item");
       return res.status(200).send("Invalid line item");
     }
-
+for (const item of order.line_items) {
+  try {
+    // 🔗 Fetch metafields for the product
     const metaResp = await fetch(
-      `https://${SHOP}/admin/api/${API_VERSION}/products/${item.product_id}/metafields.json`,
+      `https://${SHOP}.myshopify.com/admin/api/${API_VERSION}/products/${item.product_id}/metafields.json`,
       {
         method: "GET",
         headers: {
@@ -43,25 +45,46 @@ app.post("/webhooks/orders/create", async (req, res) => {
         },
       }
     );
-  // ✅ Parse the response
-  const metaData = await metaResp.json();
-  const metafield = metaData.metafields.find(
-    (m) => m.namespace === "custom" && m.key === "truckload_capacity"
-  );
-  const truckloadCapacity = parseInt(metafield?.value, 10);
 
-  // Debug logs
-  console.log("📦 Parsed truckload capacity:", truckloadCapacity);
-  console.log("📦 Quantity:", item.quantity);
+    const metaData = await metaResp.json();
+    const metafield = metaData.metafields.find(
+      (m) => m.namespace === "custom" && m.key === "truckload_capacity"
+    );
 
-  // ✅ Run split logic only if needed
-  if (!truckloadCapacity || item.quantity <= truckloadCapacity) {
-    console.log("🚫 No split needed");
-    continue;
-      }
+    const truckloadCapacity = parseInt(metafield?.value, 10);
 
-  // Your existing split logic goes here...
+    // 🧪 Debug logs
+    console.log("📦 Parsed truckload capacity:", truckloadCapacity);
+    console.log("📦 Quantity:", item.quantity);
+
+    // 🚫 Skip if no split needed
+    if (!truckloadCapacity || item.quantity <= truckloadCapacity) {
+      console.log("🚫 No split needed");
+      continue;
+    }
+
+    // 🔀 Calculate split quantities
+    const fullLoads = Math.floor(item.quantity / truckloadCapacity);
+    const remainder = item.quantity % truckloadCapacity;
+    const splitQuantities = Array(fullLoads).fill(truckloadCapacity);
+    if (remainder > 0) splitQuantities.push(remainder);
+
+    console.log("🔀 Split quantities:", splitQuantities);
+
+    // ✅ Create split orders (you can loop through splitQuantities here)
+    for (const qty of splitQuantities) {
+      // Replace this with your order creation logic
+      console.log(`✅ Creating split order with quantity: ${qty}`);
+    }
+
+    // 🏷️ Tag original order
+    console.log("🔵 Original order tagged as Split-Processed");
+
+  } catch (err) {
+    console.error("❌ Error processing split:", err);
+  }
 }
+
   
     const metaData = await metaResp.json();
     console.log("📑 Product metafields:", JSON.stringify(metaData, null, 2));
