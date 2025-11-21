@@ -1,15 +1,22 @@
 // server.js — Shopify Truckload Splitter (ES Module)
 
 import express from "express";
-import fetch from "node-fetch"; // required if Node < 18
+import fetch from "node-fetch"; // If you're on Node 18+, you can remove this import.
 
 const app = express();
 app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
-const SHOP = process.env.SHOP;
+const SHOP = process.env.SHOP; // e.g., "sl5-ait-worldwide.myshopify.com" (NO protocol)
 const ACCESS_TOKEN = process.env.SHOPIFY_ACCESS_TOKEN;
 const API_VERSION = "2023-10";
+
+// Basic env validation
+if (!SHOP || !ACCESS_TOKEN) {
+  console.error("❌ Missing required env vars: SHOP or SHOPIFY_ACCESS_TOKEN");
+}
+
+const shopBaseUrl = `https://${SHOP}`;
 
 // Health check
 app.get("/", (_req, res) => {
@@ -22,147 +29,153 @@ app.post("/webhooks/orders/create", async (req, res) => {
     const order = req.body;
     console.log("🚚 Received order:", JSON.stringify(order, null, 2));
 
+    // Skip if already processed
     if ((order.tags || "").includes("Split-Processed")) {
       console.log("↩️ Order already processed. Skipping split.");
       return res.status(200).send("Already processed");
     }
 
-    const item = order.line_items?.[0];
-    if (!item?.product_id || !item?.variant_id) {
-      console.log("⚠️ Invalid line item");
-      return res.status(200).send("Invalid line item");
+    // Validate line items exist
+    const lineItems = Array.isArray(order.line_items) ? order.line_items : [];
+    if (lineItems.length === 0) {
+      console.log("⚠️ No line items found on order");
+      return res.status(200).send("No line items");
     }
-for (const item of order.line_items) {
-  try {
-    // 🔗 Fetch metafields for the product
-    const metaResp = await fetch(
-      `https://${SHOP}.myshopify.com/admin/api/${API_VERSION}/products/${item.product_id}/metafields.json`,
-      {
-        method: "GET",
+
+    // Process each line item
+    for (const item of lineItems) {
+      if (!item?.product_id || !item?.variant_id) {
+        console.log("⚠️ Invalid line item (missing product_id or variant_id)", item);
+        continue;
+      }
+
+      // Fetch product metafields
+      let metaResp;
+      try {
+        metaResp = await fetch(
+          `${shopBaseUrl}/admin/api/${API_VERSION}/products/${item.product_id}/metafields.json`,
+          {
+            method: "GET",
+            headers: {
+              "Content-Type": "application/json",
+              "X-Shopify-Access-Token": ACCESS_TOKEN,
+            },
+          }
+        );
+      } catch (err) {
+        console.error("❌ Failed to fetch product metafields:", err);
+        continue;
+      }
+
+      // Parse metafields JSON safely
+      let metaData;
+      try {
+        metaData = await metaResp.json();
+      } catch (err) {
+        console.error("❌ Failed to parse metafield JSON:", err);
+        continue;
+      }
+
+      const metafields = Array.isArray(metaData?.metafields) ? metaData.metafields : [];
+      const truckloadMeta =
+        metafields.find(
+          (m) => m.key === "truckload_capacity" && (m.namespace === "custom" || m.namespace === "logistics")
+        ) || null;
+
+      const truckloadCapacity = parseInt(truckloadMeta?.value ?? "0", 10);
+
+      // Debug logs
+      console.log("📦 Parsed truckload capacity:", truckloadCapacity);
+      console.log("📦 Item quantity:", item.quantity);
+
+      // Skip if capacity invalid or split not needed
+      if (!Number.isFinite(truckloadCapacity) || truckloadCapacity <= 0) {
+        console.log("⚠️ No valid truckload capacity found for product", item.product_id);
+        continue;
+      }
+      if (item.quantity <= truckloadCapacity) {
+        console.log("🚫 No split needed for this line item");
+        continue;
+      }
+
+      // Calculate split quantities
+      const fullLoads = Math.floor(item.quantity / truckloadCapacity);
+      const remainder = item.quantity % truckloadCapacity;
+      const splitQuantities = Array(fullLoads).fill(truckloadCapacity);
+      if (remainder > 0) splitQuantities.push(remainder);
+
+      console.log("🔀 Split quantities:", splitQuantities);
+
+      // Create split orders
+      for (let i = 0; i < splitQuantities.length; i++) {
+        const qty = splitQuantities[i];
+
+        const newOrderPayload = {
+          order: {
+            line_items: [
+              {
+                variant_id: item.variant_id,
+                quantity: qty,
+              },
+            ],
+            // You can copy address info from the original order if needed:
+            // shipping_address: order.shipping_address,
+            // billing_address: order.billing_address,
+            tags: [`Split-Child`, `Truckload ${i + 1}`],
+          },
+        };
+
+        try {
+          const createResp = await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders.json`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-Shopify-Access-Token": ACCESS_TOKEN,
+            },
+            body: JSON.stringify(newOrderPayload),
+          });
+
+          const createdOrder = await createResp.json();
+          if (!createResp.ok) {
+            console.error(
+              `❌ Failed to create split order ${i + 1}:`,
+              createResp.status,
+              JSON.stringify(createdOrder, null, 2)
+            );
+            continue;
+          }
+          console.log(`✅ Created split order ${i + 1}:`, JSON.stringify(createdOrder, null, 2));
+        } catch (err) {
+          console.error(`❌ Error creating split order ${i + 1}:`, err);
+          continue;
+        }
+      }
+    }
+
+    // Tag original order as processed (safe append)
+    try {
+      const existingTags = (order.tags || "").trim();
+      const newTags = existingTags ? `${existingTags}, Split-Processed` : "Split-Processed";
+
+      const tagResp = await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders/${order.id}.json`, {
+        method: "PUT",
         headers: {
           "Content-Type": "application/json",
           "X-Shopify-Access-Token": ACCESS_TOKEN,
         },
-      }
-    );
-
-    const metaData = await metaResp.json();
-    const metafield = metaData.metafields.find(
-      (m) => m.namespace === "custom" && m.key === "truckload_capacity"
-    );
-
-    const truckloadCapacity = parseInt(metafield?.value, 10);
-
-    // 🧪 Debug logs
-    console.log("📦 Parsed truckload capacity:", truckloadCapacity);
-    console.log("📦 Quantity:", item.quantity);
-
-    // 🚫 Skip if no split needed
-    if (!truckloadCapacity || item.quantity <= truckloadCapacity) {
-      console.log("🚫 No split needed");
-      continue;
-    }
-
-    // 🔀 Calculate split quantities
-    const fullLoads = Math.floor(item.quantity / truckloadCapacity);
-    const remainder = item.quantity % truckloadCapacity;
-    const splitQuantities = Array(fullLoads).fill(truckloadCapacity);
-    if (remainder > 0) splitQuantities.push(remainder);
-
-    console.log("🔀 Split quantities:", splitQuantities);
-
-    // ✅ Create split orders (you can loop through splitQuantities here)
-    for (const qty of splitQuantities) {
-      // Replace this with your order creation logic
-      console.log(`✅ Creating split order with quantity: ${qty}`);
-    }
-
-    // 🏷️ Tag original order
-    console.log("🔵 Original order tagged as Split-Processed");
-
-  } catch (err) {
-    console.error("❌ Error processing split:", err);
-  }
-}
-
-  
-    const metaData = await metaResp.json();
-    console.log("📑 Product metafields:", JSON.stringify(metaData, null, 2));
-
-    const truckloadMeta = (metaData.metafields || []).find(
-      (m) => m.key === "truckload_capacity" && (m.namespace === "custom" || m.namespace === "logistics")
-    );
-
-    const truckloadCapacity = parseInt(truckloadMeta?.value || "0", 10);
-    console.log("📦 Truckload capacity:", truckloadCapacity);
-
-    if (!truckloadCapacity || truckloadCapacity <= 0) {
-      console.log("⚠️ No valid truckload capacity found");
-      return res.status(200).send("No truckload capacity found");
-    }
-
-    let remaining = item.quantity;
-    const splitQuantities = [];
-    while (remaining > 0) {
-      const split = Math.min(truckloadCapacity, remaining);
-      splitQuantities.push(split);
-      remaining -= split;
-    }
-    console.log("🔀 Split quantities:", splitQuantities);
-
-    for (let i = 0; i < splitQuantities.length; i++) {
-      const qty = splitQuantities[i];
-      const newOrderPayload = {
-        order: {
-          line_items: [
-            {
-              variant_id: item.variant_id,
-              quantity: qty,
-            },
-          ],
-          tags: [`Truckload ${i + 1}`],
-        },
-      };
-
-      const createResp = await fetch(
-        `https://${SHOP}/admin/api/${API_VERSION}/orders.json`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "X-Shopify-Access-Token": ACCESS_TOKEN,
+        body: JSON.stringify({
+          order: {
+            id: order.id,
+            tags: newTags,
           },
-          body: JSON.stringify(newOrderPayload),
-        }
-      );
+        }),
+      });
 
-      const createdOrder = await createResp.json();
-      console.log(`✅ Created split order ${i + 1}:`, JSON.stringify(createdOrder, null, 2));
-    }
-
-    await fetch(`https://${SHOP}/admin/api/${API_VERSION}/orders/${order.id}.json`, {
-      method: "PUT",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Shopify-Access-Token": ACCESS_TOKEN,
-      },
-      body: JSON.stringify({
-        order: {
-          id: order.id,
-          tags: `${order.tags}, Split-Processed`,
-        },
-      }),
-    });
-
-    console.log("🔵 Original order tagged as Split-Processed");
-    return res.status(200).send("Split processed");
-  } catch (err) {
-    console.error("❌ Error processing split:", err);
-    return res.status(500).send("Error");
-  }
-});
-
-// Start server
-app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-});
+      const tagData = await tagResp.json();
+      if (!tagResp.ok) {
+        console.error("❌ Failed to tag original order:", tagResp.status, JSON.stringify(tagData, null, 2));
+      } else {
+        console.log("🔵 Original order tagged as Split-Processed");
+      }
+    } catch (err) {
+      console.error("
