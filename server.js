@@ -152,6 +152,35 @@ app.post("/webhooks/orders/create", async (req, res) => {
           }
 
           console.log(`✅ Created split order ${i + 1}:`, JSON.stringify(createdOrder, null, 2));
+
+          // Add custom.project_name metafield
+          const projectName = Array.isArray(item.properties)
+            ? item.properties.find(p => p.name === "Project Name")?.value
+            : null;
+
+          if (projectName) {
+            try {
+              await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders/${createdOrder.order.id}/metafields.json`, {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                  "X-Shopify-Access-Token": ACCESS_TOKEN,
+                },
+                body: JSON.stringify({
+                  metafield: {
+                    namespace: "custom",
+                    key: "project_name",
+                    value: projectName,
+                    type: "single_line_text_field"
+                  }
+                })
+              });
+              console.log("📌 custom.project_name metafield added to child order");
+            } catch (err) {
+              console.error("❌ Failed to add custom.project_name metafield:", err);
+            }
+          }
+
         } catch (err) {
           console.error(`❌ Error creating split order ${i + 1}:`, err);
           continue;
@@ -201,4 +230,3 @@ app.post("/webhooks/orders/create", async (req, res) => {
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });
-
