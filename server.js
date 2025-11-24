@@ -126,11 +126,23 @@ app.post("/webhooks/orders/create", async (req, res) => {
             note: `Split from original order #${order.name} (ID: ${order.id})`,
             tags: [`Split-Child`, `Truckload ${i + 1}`, `Parent-${order.name}`],
 
-            // 🔑 Added native PO field
+            // 🔑 Native PO field
             purchase_order_number: Array.isArray(item.properties)
               ? item.properties.find(p => p.name === "Project Name")?.value || null
               : null,
-          },
+
+            // 🔑 New Pickup Date metafield
+            metafields: [
+              {
+                namespace: "custom",
+                key: "pickup_date",
+                type: "single_line_text_field", // or "date" if Extensiv accepts date type
+                value: Array.isArray(item.properties)
+                  ? item.properties.find(p => p.name === "Pickup Date")?.value || null
+                  : null
+              }
+            ]
+          }
         };
 
         try {
@@ -158,7 +170,7 @@ app.post("/webhooks/orders/create", async (req, res) => {
 
           console.log(`✅ Created split order ${i + 1}:`, JSON.stringify(createdOrder, null, 2));
 
-          // Add custom.project_name metafield
+          // Add custom.project_name metafield (still keeping this for traceability)
           const projectName = Array.isArray(item.properties)
             ? item.properties.find(p => p.name === "Project Name")?.value
             : null;
@@ -235,4 +247,3 @@ app.post("/webhooks/orders/create", async (req, res) => {
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });
-
