@@ -125,6 +125,11 @@ app.post("/webhooks/orders/create", async (req, res) => {
             email: typeof order.email === "string" ? order.email : undefined,
             note: `Split from original order #${order.name} (ID: ${order.id})`,
             tags: [`Split-Child`, `Truckload ${i + 1}`, `Parent-${order.name}`],
+
+            // 🔑 Added native PO field
+            purchase_order_number: Array.isArray(item.properties)
+              ? item.properties.find(p => p.name === "Project Name")?.value || null
+              : null,
           },
         };
 
@@ -230,3 +235,4 @@ app.post("/webhooks/orders/create", async (req, res) => {
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });
+
