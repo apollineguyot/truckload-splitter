@@ -16,6 +16,14 @@ if (!SHOP || !ACCESS_TOKEN) {
 
 const shopBaseUrl = `https://${SHOP}`;
 
+// 🔧 Normalize date to YYYY-MM-DD
+function normalizeDate(input) {
+  if (!input || typeof input !== "string") return null;
+  const parsed = new Date(input);
+  if (isNaN(parsed.getTime())) return null;
+  return parsed.toISOString().slice(0, 10);
+}
+
 // Health check
 app.get("/", (_req, res) => {
   res.status(200).send("OK");
@@ -99,6 +107,14 @@ app.post("/webhooks/orders/create", async (req, res) => {
 
       for (let i = 0; i < splitQuantities.length; i++) {
         const qty = splitQuantities[i];
+        const projectName = Array.isArray(item.properties)
+          ? item.properties.find(p => p.name === "Project Name")?.value || null
+          : null;
+
+        const pickupDateRaw = Array.isArray(item.properties)
+          ? item.properties.find(p => p.name === "Pickup Date")?.value || null
+          : null;
+
         const newOrderPayload = {
           order: {
             line_items: [
@@ -127,19 +143,15 @@ app.post("/webhooks/orders/create", async (req, res) => {
             tags: [`Split-Child`, `Truckload ${i + 1}`, `Parent-${order.name}`],
 
             // 🔑 Native PO field
-            purchase_order_number: Array.isArray(item.properties)
-              ? item.properties.find(p => p.name === "Project Name")?.value || null
-              : null,
+            purchase_order_number: projectName,
 
-            // 🔑 New Pickup Date metafield
+            // 🔑 Metafields: Pickup Date
             metafields: [
               {
                 namespace: "custom",
                 key: "pickup_date",
-                type: "single_line_text_field", // or "date" if Extensiv accepts date type
-                value: Array.isArray(item.properties)
-                  ? item.properties.find(p => p.name === "Pickup Date")?.value || null
-                  : null
+                type: "date",
+                value: normalizeDate(pickupDateRaw)
               }
             ]
           }
@@ -170,11 +182,7 @@ app.post("/webhooks/orders/create", async (req, res) => {
 
           console.log(`✅ Created split order ${i + 1}:`, JSON.stringify(createdOrder, null, 2));
 
-          // Add custom.project_name metafield (still keeping this for traceability)
-          const projectName = Array.isArray(item.properties)
-            ? item.properties.find(p => p.name === "Project Name")?.value
-            : null;
-
+          // Add custom.project_name metafield (for traceability)
           if (projectName) {
             try {
               await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders/${createdOrder.order.id}/metafields.json`, {
@@ -247,3 +255,4 @@ app.post("/webhooks/orders/create", async (req, res) => {
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });
+
