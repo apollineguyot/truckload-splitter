@@ -16,14 +16,6 @@ if (!SHOP || !ACCESS_TOKEN) {
 
 const shopBaseUrl = `https://${SHOP}`;
 
-// 🔧 Normalize date to YYYY-MM-DD
-function normalizeDate(input) {
-  if (!input || typeof input !== "string") return null;
-  const parsed = new Date(input);
-  if (isNaN(parsed.getTime())) return null;
-  return parsed.toISOString().slice(0, 10);
-}
-
 // Health check
 app.get("/", (_req, res) => {
   res.status(200).send("OK");
@@ -111,10 +103,6 @@ app.post("/webhooks/orders/create", async (req, res) => {
           ? item.properties.find(p => p.name === "Project Name")?.value || null
           : null;
 
-        const pickupDateRaw = Array.isArray(item.properties)
-          ? item.properties.find(p => p.name === "Pickup Date")?.value || null
-          : null;
-
         const newOrderPayload = {
           order: {
             line_items: [
@@ -143,17 +131,7 @@ app.post("/webhooks/orders/create", async (req, res) => {
             tags: [`Split-Child`, `Truckload ${i + 1}`, `Parent-${order.name}`],
 
             // 🔑 Native PO field
-            purchase_order_number: projectName,
-
-            // 🔑 Metafields: Pickup Date
-            metafields: [
-              {
-                namespace: "custom",
-                key: "pickup_date",
-                type: "date",
-                value: normalizeDate(pickupDateRaw)
-              }
-            ]
+            purchase_order_number: projectName
           }
         };
 
