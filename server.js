@@ -191,9 +191,12 @@ app.post("/webhooks/orders/create", async (req, res) => {
       }
     }
 
+    // Tag original order to prevent WMS import
     try {
       const existingTags = (order.tags || "").trim();
-      const newTags = existingTags ? `${existingTags}, Split-Processed` : "Split-Processed";
+      const newTags = existingTags
+        ? `${existingTags}, Split-Processed, Skip-WMS`
+        : "Split-Processed, Skip-WMS";
 
       const tagResp = await fetch(
         `${shopBaseUrl}/admin/api/${API_VERSION}/orders/${order.id}.json`,
@@ -216,7 +219,7 @@ app.post("/webhooks/orders/create", async (req, res) => {
       if (!tagResp.ok) {
         console.error("❌ Failed to tag original order:", tagResp.status, JSON.stringify(tagData, null, 2));
       } else {
-        console.log("🔵 Original order tagged as Split-Processed");
+        console.log("🔵 Original order tagged as Split-Processed, Skip-WMS");
       }
     } catch (err) {
       console.error("❌ Error tagging original order:", err);
