@@ -38,6 +38,8 @@ app.post("/webhooks/orders/create", async (req, res) => {
       return res.status(200).send("No line items");
     }
 
+    let splitOccurred = false;
+
     for (const item of lineItems) {
       if (!item?.product_id || !item?.variant_id) {
         console.log("⚠️ Invalid line item:", item);
@@ -87,8 +89,37 @@ app.post("/webhooks/orders/create", async (req, res) => {
 
       if (item.quantity <= truckloadCapacity) {
         console.log("🚫 No split needed for this line item");
-        continue;
+
+        // Tag unsplit order as Truckload-Ready
+        try {
+          const existingTags = (order.tags || "").trim();
+          const newTags = existingTags
+            ? `${existingTags}, Truckload-Ready`
+            : "Truckload-Ready";
+
+          await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders/${order.id}.json`, {
+            method: "PUT",
+            headers: {
+              "Content-Type": "application/json",
+              "X-Shopify-Access-Token": ACCESS_TOKEN,
+            },
+            body: JSON.stringify({
+              order: {
+                id: order.id,
+                tags: newTags,
+              },
+            }),
+          });
+
+          console.log("✅ Tagged unsplit order as Truckload-Ready");
+        } catch (err) {
+          console.error("❌ Failed to tag unsplit order:", err);
+        }
+
+        return res.status(200).send("No split needed");
       }
+
+      splitOccurred = true;
 
       const fullLoads = Math.floor(item.quantity / truckloadCapacity);
       const remainder = item.quantity % truckloadCapacity;
@@ -191,38 +222,40 @@ app.post("/webhooks/orders/create", async (req, res) => {
       }
     }
 
-    // Tag original order to prevent WMS import
-    try {
-      const existingTags = (order.tags || "").trim();
-      const newTags = existingTags
-        ? `${existingTags}, Split-Processed, Skip-WMS`
-        : "Split-Processed, Skip-WMS";
+    if (splitOccurred) {
+      // Tag original order to prevent WMS import
+      try {
+        const existingTags = (order.tags || "").trim();
+        const newTags = existingTags
+          ? `${existingTags}, Split-Processed, Skip-WMS`
+          : "Split-Processed, Skip-WMS";
 
-      const tagResp = await fetch(
-        `${shopBaseUrl}/admin/api/${API_VERSION}/orders/${order.id}.json`,
-        {
-          method: "PUT",
-          headers: {
-            "Content-Type": "application/json",
-            "X-Shopify-Access-Token": ACCESS_TOKEN,
-          },
-          body: JSON.stringify({
-            order: {
-              id: order.id,
-              tags: newTags,
+        const tagResp = await fetch(
+          `${shopBaseUrl}/admin/api/${API_VERSION}/orders/${order.id}.json`,
+          {
+            method: "PUT",
+            headers: {
+              "Content-Type": "application/json",
+              "X-Shopify-Access-Token": ACCESS_TOKEN,
             },
-          }),
-        }
-      );
+            body: JSON.stringify({
+              order: {
+                id: order.id,
+                tags: newTags,
+              },
+            }),
+          }
+        );
 
-      const tagData = await tagResp.json();
-      if (!tagResp.ok) {
-        console.error("❌ Failed to tag original order:", tagResp.status, JSON.stringify(tagData, null, 2));
-      } else {
-        console.log("🔵 Original order tagged as Split-Processed, Skip-WMS");
+        const tagData = await tagResp.json();
+        if (!tagResp.ok) {
+          console.error("❌ Failed to tag original order:", tagResp.status, JSON.stringify(tagData, null, 2));
+        } else {
+          console.log("🔵 Original order tagged as Split-Processed, Skip-WMS");
+        }
+      } catch (err) {
+        console.error("❌ Error tagging original order:", err);
       }
-    } catch (err) {
-      console.error("❌ Error tagging original order:", err);
     }
 
     return res.status(200).send("Split processed");
@@ -236,4 +269,3 @@ app.post("/webhooks/orders/create", async (req, res) => {
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });
-
