@@ -1,271 +1,155 @@
-// server.js — Shopify Truckload Splitter (ES Module)
+// server.js
 
-import express from "express";
+const express = require("express");
+const bodyParser = require("body-parser");
+const fetch = require("node-fetch");
 
 const app = express();
-app.use(express.json());
+app.use(bodyParser.json());
 
-const PORT = process.env.PORT || 3000;
-const SHOP = process.env.SHOP;
+const shopBaseUrl = `https://${process.env.SHOPIFY_SHOP_DOMAIN}`;
 const ACCESS_TOKEN = process.env.SHOPIFY_ACCESS_TOKEN;
-const API_VERSION = process.env.API_VERSION || "2023-10";
+const API_VERSION = "2025-01"; // adjust to your current API version
 
-if (!SHOP || !ACCESS_TOKEN) {
-  console.error("❌ Missing required env vars: SHOP or SHOPIFY_ACCESS_TOKEN");
-}
-
-const shopBaseUrl = `https://${SHOP}`;
-
-// Health check
-app.get("/", (_req, res) => {
-  res.status(200).send("OK");
-});
-
-// Webhook: orders/create
-app.post("/webhooks/orders/create", async (req, res) => {
+// Webhook endpoint
+app.post("/webhook/orders/create", async (req, res) => {
   try {
     const order = req.body;
-    console.log("🚚 Received order:", JSON.stringify(order, null, 2));
 
-    if ((order.tags || "").includes("Split-Processed")) {
-      console.log("↩️ Order already processed. Skipping split.");
-      return res.status(200).send("Already processed");
-    }
+    // ✅ Capture pickup date attribute
+    const pickupDateAttr = order.attributes?.pickup_date || null;
 
-    const lineItems = Array.isArray(order.line_items) ? order.line_items : [];
-    if (lineItems.length === 0) {
-      console.log("⚠️ No line items found on order");
-      return res.status(200).send("No line items");
-    }
+    // Example: unsplit order tagging
+    if (!order.split_required) {
+      await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders/${order.id}.json`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Shopify-Access-Token": ACCESS_TOKEN,
+        },
+        body: JSON.stringify({
+          order: {
+            id: order.id,
+            tags: `${order.tags}, Truckload-Ready`,
+          },
+        }),
+      });
 
-    let splitOccurred = false;
-
-    for (const item of lineItems) {
-      if (!item?.product_id || !item?.variant_id) {
-        console.log("⚠️ Invalid line item:", item);
-        continue;
-      }
-
-      let metaResp;
-      try {
-        metaResp = await fetch(
-          `${shopBaseUrl}/admin/api/${API_VERSION}/products/${item.product_id}/metafields.json`,
-          {
-            method: "GET",
-            headers: {
-              "Content-Type": "application/json",
-              "X-Shopify-Access-Token": ACCESS_TOKEN,
+      // ✅ Add pickup date metafield to parent
+      if (pickupDateAttr) {
+        await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders/${order.id}/metafields.json`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Shopify-Access-Token": ACCESS_TOKEN,
+          },
+          body: JSON.stringify({
+            metafield: {
+              namespace: "custom",
+              key: "pickup_date",
+              type: "date",
+              value: pickupDateAttr,
             },
-          }
-        );
-      } catch (err) {
-        console.error("❌ Failed to fetch product metafields:", err);
-        continue;
+          }),
+        });
       }
 
-      let metaData;
-      try {
-        metaData = await metaResp.json();
-      } catch (err) {
-        console.error("❌ Failed to parse metafield JSON:", err);
-        continue;
-      }
+      return res.status(200).send("Unsplit order tagged and pickup date saved.");
+    }
 
-      const metafields = Array.isArray(metaData?.metafields) ? metaData.metafields : [];
-      const truckloadMeta = metafields.find(
-        (m) =>
-          m.key === "truckload_capacity" &&
-          (m.namespace === "custom" || m.namespace === "logistics")
-      );
+    // Example: split order logic
+    for (const split of order.splits) {
+      const newOrderPayload = {
+        order: {
+          line_items: split.line_items,
+          customer: order.customer,
+          shipping_address: order.shipping_address,
+          billing_address: order.billing_address,
+          tags: "split-child",
+          // ✅ Add pickup date into note
+          note:
+            `Split from original order #${order.name} (ID: ${order.id})` +
+            (pickupDateAttr ? ` | Pickup Date: ${pickupDateAttr}` : ""),
+        },
+      };
 
-      const truckloadCapacity = parseInt(truckloadMeta?.value ?? "0", 10);
-      console.log("📦 Truckload capacity:", truckloadCapacity);
-      console.log("📦 Item quantity:", item.quantity);
+      const response = await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders.json`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Shopify-Access-Token": ACCESS_TOKEN,
+        },
+        body: JSON.stringify(newOrderPayload),
+      });
 
-      if (!Number.isFinite(truckloadCapacity) || truckloadCapacity <= 0) {
-        console.log("⚠️ No valid truckload capacity found for product", item.product_id);
-        continue;
-      }
+      const createdOrder = await response.json();
 
-      if (item.quantity <= truckloadCapacity) {
-        console.log("🚫 No split needed for this line item");
-
-        // Tag unsplit order as Truckload-Ready
+      // ✅ Add pickup date metafield to child order
+      if (pickupDateAttr) {
         try {
-          const existingTags = (order.tags || "").trim();
-          const newTags = existingTags
-            ? `${existingTags}, Truckload-Ready`
-            : "Truckload-Ready";
-
-          await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders/${order.id}.json`, {
-            method: "PUT",
+          await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders/${createdOrder.order.id}/metafields.json`, {
+            method: "POST",
             headers: {
               "Content-Type": "application/json",
               "X-Shopify-Access-Token": ACCESS_TOKEN,
             },
             body: JSON.stringify({
-              order: {
-                id: order.id,
-                tags: newTags,
+              metafield: {
+                namespace: "custom",
+                key: "pickup_date",
+                type: "date",
+                value: pickupDateAttr,
               },
             }),
           });
-
-          console.log("✅ Tagged unsplit order as Truckload-Ready");
+          console.log("📌 custom.pickup_date metafield added to child order");
         } catch (err) {
-          console.error("❌ Failed to tag unsplit order:", err);
-        }
-
-        return res.status(200).send("No split needed");
-      }
-
-      splitOccurred = true;
-
-      const fullLoads = Math.floor(item.quantity / truckloadCapacity);
-      const remainder = item.quantity % truckloadCapacity;
-      const splitQuantities = Array(fullLoads).fill(truckloadCapacity);
-      if (remainder > 0) splitQuantities.push(remainder);
-
-      console.log("🔀 Split quantities:", splitQuantities);
-
-      for (let i = 0; i < splitQuantities.length; i++) {
-        const qty = splitQuantities[i];
-        const projectName = Array.isArray(item.properties)
-          ? item.properties.find(p => p.name === "Project Name")?.value || null
-          : null;
-
-        const newOrderPayload = {
-          order: {
-            line_items: [
-              {
-                variant_id: item.variant_id,
-                quantity: qty,
-              },
-            ],
-            customer: order.customer && typeof order.customer === "object"
-              ? {
-                  id: order.customer.id,
-                  email: order.customer.email,
-                  first_name: order.customer.first_name,
-                  last_name: order.customer.last_name,
-                  phone: order.customer.phone,
-                }
-              : undefined,
-            shipping_address: order.shipping_address && typeof order.shipping_address === "object"
-              ? order.shipping_address
-              : undefined,
-            billing_address: order.billing_address && typeof order.billing_address === "object"
-              ? order.billing_address
-              : undefined,
-            email: typeof order.email === "string" ? order.email : undefined,
-            note: `Split from original order #${order.name} (ID: ${order.id})`,
-            tags: [`Split-Child`, `Truckload ${i + 1}`, `Parent-${order.name}`],
-
-            // 🔑 Native PO field
-            purchase_order_number: projectName
-          }
-        };
-
-        try {
-          const createResp = await fetch(
-            `${shopBaseUrl}/admin/api/${API_VERSION}/orders.json`,
-            {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-                "X-Shopify-Access-Token": ACCESS_TOKEN,
-              },
-              body: JSON.stringify(newOrderPayload),
-            }
-          );
-
-          const createdOrder = await createResp.json();
-          if (!createResp.ok) {
-            console.error(
-              `❌ Failed to create split order ${i + 1}:`,
-              createResp.status,
-              JSON.stringify(createdOrder, null, 2)
-            );
-            continue;
-          }
-
-          console.log(`✅ Created split order ${i + 1}:`, JSON.stringify(createdOrder, null, 2));
-
-          // Add custom.project_name metafield (for traceability)
-          if (projectName) {
-            try {
-              await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders/${createdOrder.order.id}/metafields.json`, {
-                method: "POST",
-                headers: {
-                  "Content-Type": "application/json",
-                  "X-Shopify-Access-Token": ACCESS_TOKEN,
-                },
-                body: JSON.stringify({
-                  metafield: {
-                    namespace: "custom",
-                    key: "project_name",
-                    value: projectName,
-                    type: "single_line_text_field"
-                  }
-                })
-              });
-              console.log("📌 custom.project_name metafield added to child order");
-            } catch (err) {
-              console.error("❌ Failed to add custom.project_name metafield:", err);
-            }
-          }
-
-        } catch (err) {
-          console.error(`❌ Error creating split order ${i + 1}:`, err);
-          continue;
+          console.error("❌ Failed to add custom.pickup_date metafield:", err);
         }
       }
     }
 
-    if (splitOccurred) {
-      // Tag original order to prevent WMS import
-      try {
-        const existingTags = (order.tags || "").trim();
-        const newTags = existingTags
-          ? `${existingTags}, Split-Processed, Skip-WMS`
-          : "Split-Processed, Skip-WMS";
+    // Tag parent as Skip-WMS
+    await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders/${order.id}.json`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Shopify-Access-Token": ACCESS_TOKEN,
+      },
+      body: JSON.stringify({
+        order: {
+          id: order.id,
+          tags: `${order.tags}, Skip-WMS`,
+        },
+      }),
+    });
 
-        const tagResp = await fetch(
-          `${shopBaseUrl}/admin/api/${API_VERSION}/orders/${order.id}.json`,
-          {
-            method: "PUT",
-            headers: {
-              "Content-Type": "application/json",
-              "X-Shopify-Access-Token": ACCESS_TOKEN,
-            },
-            body: JSON.stringify({
-              order: {
-                id: order.id,
-                tags: newTags,
-              },
-            }),
-          }
-        );
-
-        const tagData = await tagResp.json();
-        if (!tagResp.ok) {
-          console.error("❌ Failed to tag original order:", tagResp.status, JSON.stringify(tagData, null, 2));
-        } else {
-          console.log("🔵 Original order tagged as Split-Processed, Skip-WMS");
-        }
-      } catch (err) {
-        console.error("❌ Error tagging original order:", err);
-      }
+    // ✅ Add pickup date metafield to parent as well
+    if (pickupDateAttr) {
+      await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders/${order.id}/metafields.json`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Shopify-Access-Token": ACCESS_TOKEN,
+        },
+        body: JSON.stringify({
+          metafield: {
+            namespace: "custom",
+            key: "pickup_date",
+            type: "date",
+            value: pickupDateAttr,
+          },
+        }),
+      });
     }
 
-    return res.status(200).send("Split processed");
-  } catch (err) {
-    console.error("❌ Error processing split:", err);
-    return res.status(500).send("Error");
+    res.status(200).send("Split orders created, parent tagged, pickup date propagated.");
+  } catch (error) {
+    console.error("Webhook error:", error);
+    res.status(500).send("Error processing webhook");
   }
 });
 
-// Start server
-app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
+app.listen(3000, () => {
+  console.log("Server running on port 3000");
 });
