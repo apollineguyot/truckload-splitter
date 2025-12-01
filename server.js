@@ -53,16 +53,18 @@ app.post("/webhooks/orders/create", async (req, res) => {
     for (const item of order.line_items) {
       const productCapacity = await getProductCapacity(item.product_id);
       if (productCapacity) {
-        capacity = productCapacity; // assume all items share same capacity
+        capacity = productCapacity;
         break;
       }
     }
-    console.log("📦 Truckload capacity (from product):", capacity);
 
     const totalItems = order.line_items.length;
+    console.log("🔢 Total line items:", totalItems);
+    console.log("📦 Truckload capacity (from product):", capacity);
 
-    // ✅ Split if capacity is defined and exceeded
     if (capacity && totalItems > capacity) {
+      console.log("🚨 Capacity exceeded — splitting order");
+
       // naive split: chunk line_items into groups of `capacity`
       const splits = [];
       for (let i = 0; i < totalItems; i += capacity) {
@@ -72,6 +74,8 @@ app.post("/webhooks/orders/create", async (req, res) => {
       }
 
       for (const split of splits) {
+        console.log(`✂️ Creating child order with ${split.line_items.length} items`);
+
         const newOrderPayload = {
           order: {
             line_items: split.line_items,
@@ -96,6 +100,7 @@ app.post("/webhooks/orders/create", async (req, res) => {
         });
 
         const createdOrder = await response.json();
+        console.log(`✅ Child order created: ${createdOrder.order?.id}`);
 
         // ✅ Add pickup date to child order
         if (pickupDateAttr) {
@@ -155,7 +160,9 @@ app.post("/webhooks/orders/create", async (req, res) => {
       return res.status(200).send("Split orders created, parent tagged, pickup date propagated.");
     }
 
-    // ✅ Otherwise: tag as Truckload-Ready
+    console.log("✅ Capacity not exceeded — tagging as Truckload-Ready");
+
+    // ✅ Tag unsplit order
     await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders/${order.id}.json`, {
       method: "PUT",
       headers: {
@@ -201,4 +208,3 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });
-
