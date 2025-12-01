@@ -1,12 +1,7 @@
 {
-  "type": "module",
-  "scripts": {
-    "start": "node server.js"
-  }
-}
-{
   "name": "truckload-splitter",
   "version": "1.0.0",
+  "type": "module",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
@@ -17,4 +12,3 @@
     "node-fetch": "^2.6.7"
   }
 }
-
