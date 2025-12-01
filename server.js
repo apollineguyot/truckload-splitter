@@ -11,28 +11,35 @@ const shopBaseUrl = `https://${process.env.SHOPIFY_SHOP_DOMAIN}`;
 const ACCESS_TOKEN = process.env.SHOPIFY_ACCESS_TOKEN;
 const API_VERSION = "2025-01"; // adjust to your current API version
 
+// Helper: fetch metafield value
+async function getMetafield(orderId, key) {
+  const response = await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders/${orderId}/metafields.json`, {
+    method: "GET",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Shopify-Access-Token": ACCESS_TOKEN,
+    },
+  });
+  const data = await response.json();
+  const mf = data.metafields.find(m => m.key === key);
+  return mf ? mf.value : null;
+}
+
 // Webhook endpoint
 app.post("/webhooks/orders/create", async (req, res) => {
   try {
     const order = req.body;
-    console.log("🚚 Received order:", order);
+    console.log("🚚 Received order:", { id: order.id, name: order.name });
 
-    // ✅ Capture pickup date attribute
-    const pickupDateAttr =
-      order.attributes?.pickup_date ||
-      order.note_attributes?.find(attr => attr.name === "pickup_date")?.value ||
-      null;
+    // ✅ Capture pickup date metafield
+    const pickupDateAttr = await getMetafield(order.id, "pickup_date");
 
-    // ✅ Capture truckload capacity attribute
-    const truckloadCapacity =
-      order.attributes?.truckload_capacity ||
-      order.note_attributes?.find(attr => attr.name === "truckload_capacity")?.value ||
-      null;
-
+    // ✅ Capture truckload capacity metafield
+    const truckloadCapacity = await getMetafield(order.id, "truckload_capacity");
     console.log("📦 Truckload capacity:", truckloadCapacity);
 
-    // Example: unsplit order tagging (no split required or capacity not exceeded)
-    if (!order.split_required && !truckloadCapacity) {
+    // Example: unsplit order tagging (capacity not exceeded)
+    if (!truckloadCapacity || parseInt(truckloadCapacity) >= order.line_items.length) {
       await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders/${order.id}.json`, {
         method: "PUT",
         headers: {
@@ -47,7 +54,7 @@ app.post("/webhooks/orders/create", async (req, res) => {
         }),
       });
 
-      // ✅ Add pickup date metafield to parent
+      // ✅ Ensure pickup date metafield exists
       if (pickupDateAttr) {
         await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders/${order.id}/metafields.json`, {
           method: "POST",
@@ -69,7 +76,7 @@ app.post("/webhooks/orders/create", async (req, res) => {
       return res.status(200).send("Unsplit order tagged and pickup date saved.");
     }
 
-    // Example: split order logic based on truckload capacity
+    // Example: split order logic when capacity exceeded
     if (truckloadCapacity && parseInt(truckloadCapacity) < order.line_items.length) {
       for (const split of order.splits) {
         const newOrderPayload = {
@@ -150,4 +157,3 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });
-
