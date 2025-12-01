@@ -150,6 +150,7 @@ app.post("/webhook/orders/create", async (req, res) => {
   }
 });
 
+// ✅ FIXED: Render-compatible port binding
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
