@@ -43,12 +43,10 @@ async function getProductCapacity(productId) {
 app.post("/webhooks/orders/create", async (req, res) => {
   try {
     const order = req.body;
-    console.log("🟠 Received order:", { id: order.id, name: order.name });
+    console.log("📥 Received order:", { id: order.id, name: order.name });
 
-    // ✅ Read pickup date from order metafields
     const pickupDateAttr = await getOrderMetafield(order.id, "custom", "pickup_date");
 
-    // ✅ Determine truckload capacity from products
     let capacity = null;
     for (const item of order.line_items) {
       const productCapacity = await getProductCapacity(item.product_id);
@@ -58,15 +56,13 @@ app.post("/webhooks/orders/create", async (req, res) => {
       }
     }
 
-    // ✅ Count total quantity, not just line item count
     const totalQuantity = order.line_items.reduce((sum, item) => sum + item.quantity, 0);
-    console.log("🔢 Total quantity:", totalQuantity);
     console.log("📦 Truckload capacity (from product):", capacity);
+    console.log("🔢 Total quantity:", totalQuantity);
 
     if (capacity && totalQuantity > capacity) {
-      console.log("🚨 Capacity exceeded — splitting order");
+      console.log("🍉 Capacity exceeded — splitting order");
 
-      // Flatten line items into individual units
       const flattenedItems = [];
       for (const item of order.line_items) {
         for (let i = 0; i < item.quantity; i++) {
@@ -74,13 +70,11 @@ app.post("/webhooks/orders/create", async (req, res) => {
         }
       }
 
-      // Chunk into groups of `capacity`
       const splits = [];
       for (let i = 0; i < flattenedItems.length; i += capacity) {
         const chunk = flattenedItems.slice(i, i + capacity);
         const grouped = [];
 
-        // Group identical SKUs back together
         for (const unit of chunk) {
           const existing = grouped.find(g => g.variant_id === unit.variant_id);
           if (existing) {
@@ -94,21 +88,7 @@ app.post("/webhooks/orders/create", async (req, res) => {
       }
 
       for (const split of splits) {
-        console.log(`✂️ Creating child order with ${split.line_items.reduce((sum, li) => sum + li.quantity, 0)} items`);
-
-        const newOrderPayload = {
-          order: {
-            line_items: split.line_items,
-            customer: order.customer,
-            shipping_address: order.shipping_address,
-            billing_address: order.billing_address,
-            tags: "split-child",
-            note:
-              `Split from original order #${order.name} (ID: ${order.id})` +
-              (pickupDateAttr ? ` | Pickup Date: ${pickupDateAttr}` : "") +
-              ` | Truckload Capacity: ${capacity}`,
-          },
-        };
+        console.log(`❌ Creating child order with ${split.line_items.reduce((sum, li) => sum + li.quantity, 0)} items`);
 
         const response = await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders.json`, {
           method: "POST",
@@ -116,13 +96,21 @@ app.post("/webhooks/orders/create", async (req, res) => {
             "Content-Type": "application/json",
             "X-Shopify-Access-Token": ACCESS_TOKEN,
           },
-          body: JSON.stringify(newOrderPayload),
+          body: JSON.stringify({
+            order: {
+              line_items: split.line_items,
+              tags: "split-child",
+              note:
+                `Split from original order #${order.name} (ID: ${order.id})` +
+                (pickupDateAttr ? ` | Pickup Date: ${pickupDateAttr}` : "") +
+                ` | Truckload Capacity: ${capacity}`,
+            },
+          }),
         });
 
         const createdOrder = await response.json();
-        console.log(`✅ Child order created: ${createdOrder.order?.id}`);
+        console.log(`🟢 Child order created: ${createdOrder.order?.id}`);
 
-        // ✅ Add pickup date to child order
         if (pickupDateAttr) {
           await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders/${createdOrder.order.id}/metafields.json`, {
             method: "POST",
@@ -139,11 +127,9 @@ app.post("/webhooks/orders/create", async (req, res) => {
               },
             }),
           });
-          console.log("📌 pickup_date added to child order");
         }
       }
 
-      // ✅ Tag parent as Skip-WMS
       await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders/${order.id}.json`, {
         method: "PUT",
         headers: {
@@ -158,7 +144,6 @@ app.post("/webhooks/orders/create", async (req, res) => {
         }),
       });
 
-      // ✅ Add pickup date to parent
       if (pickupDateAttr) {
         await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders/${order.id}/metafields.json`, {
           method: "POST",
@@ -180,9 +165,8 @@ app.post("/webhooks/orders/create", async (req, res) => {
       return res.status(200).send("Split orders created, parent tagged, pickup date propagated.");
     }
 
-    console.log("✅ Capacity not exceeded — tagging as Truckload-Ready");
+    console.log("🟣 Capacity not exceeded — tagging as TruckLoad-Ready");
 
-    // ✅ Tag unsplit order
     await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders/${order.id}.json`, {
       method: "PUT",
       headers: {
@@ -197,7 +181,6 @@ app.post("/webhooks/orders/create", async (req, res) => {
       }),
     });
 
-    // ✅ Add pickup date to unsplit order
     if (pickupDateAttr) {
       await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders/${order.id}/metafields.json`, {
         method: "POST",
@@ -223,8 +206,8 @@ app.post("/webhooks/orders/create", async (req, res) => {
   }
 });
 
-// ✅ Render-compatible port binding
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });
+
