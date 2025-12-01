@@ -87,7 +87,7 @@ app.post("/webhooks/orders/create", async (req, res) => {
                 billing_address: order.billing_address,
                 tags: "split-child",
                 note: `Split from original order #${order.name} (ID: ${order.id}) | Truckload Capacity: ${capacity}`,
-                financial_status: "pending", // ✅ ensures order is created
+                financial_status: "pending",
               },
             }),
           });
@@ -95,16 +95,48 @@ app.post("/webhooks/orders/create", async (req, res) => {
           const createdOrder = await response.json();
 
           if (!response.ok || !createdOrder.order?.id) {
-            console.error("❌ Failed to create child order:", createdOrder);
+            console.error("❌ Failed to create child order:", JSON.stringify(createdOrder, null, 2));
           } else {
-            console.log(`🟢 Child order created: ${createdOrder.order.id}`);
+            console.log("🟢 Child order created:", JSON.stringify(createdOrder, null, 2));
           }
         } catch (err) {
           console.error("❌ Error creating child order:", err.message);
         }
       }
 
-      await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders/${order.id}.json`, {
+      try {
+        const parentResp = await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders/${order.id}.json`, {
+          method: "PUT",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Shopify-Access-Token": ACCESS_TOKEN,
+          },
+          body: JSON.stringify({
+            order: {
+              id: order.id,
+              tags: `${order.tags}, Skip-WMS`,
+            },
+          }),
+        });
+
+        const parentData = await parentResp.json();
+
+        if (!parentResp.ok) {
+          console.error("❌ Failed to tag parent order:", JSON.stringify(parentData, null, 2));
+        } else {
+          console.log("🔵 Parent order tagged:", JSON.stringify(parentData, null, 2));
+        }
+      } catch (err) {
+        console.error("❌ Error tagging parent order:", err.message);
+      }
+
+      return res.status(200).send("Split orders created, parent tagged.");
+    }
+
+    console.log("🟣 Capacity not exceeded — tagging as TruckLoad-Ready");
+
+    try {
+      const parentResp = await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders/${order.id}.json`, {
         method: "PUT",
         headers: {
           "Content-Type": "application/json",
@@ -113,29 +145,21 @@ app.post("/webhooks/orders/create", async (req, res) => {
         body: JSON.stringify({
           order: {
             id: order.id,
-            tags: `${order.tags}, Skip-WMS`,
+            tags: `${order.tags}, Truckload-Ready`,
           },
         }),
       });
 
-      return res.status(200).send("Split orders created, parent tagged.");
+      const parentData = await parentResp.json();
+
+      if (!parentResp.ok) {
+        console.error("❌ Failed to tag parent order:", JSON.stringify(parentData, null, 2));
+      } else {
+        console.log("🔵 Parent order tagged:", JSON.stringify(parentData, null, 2));
+      }
+    } catch (err) {
+      console.error("❌ Error tagging parent order:", err.message);
     }
-
-    console.log("🟣 Capacity not exceeded — tagging as TruckLoad-Ready");
-
-    await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders/${order.id}.json`, {
-      method: "PUT",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Shopify-Access-Token": ACCESS_TOKEN,
-      },
-      body: JSON.stringify({
-        order: {
-          id: order.id,
-          tags: `${order.tags}, Truckload-Ready`,
-        },
-      }),
-    });
 
     res.status(200).send("Order processed: split or tagged based on truckload capacity.");
   } catch (error) {
