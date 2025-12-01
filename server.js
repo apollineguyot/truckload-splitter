@@ -1,5 +1,3 @@
-// server.js
-
 const express = require("express");
 const bodyParser = require("body-parser");
 const fetch = require("node-fetch");
@@ -39,13 +37,13 @@ async function getProductCapacity(productId) {
   return mf ? parseInt(mf.value) : null;
 }
 
-// Webhook endpoint
 app.post("/webhooks/orders/create", async (req, res) => {
   try {
     const order = req.body;
     console.log("📥 Received order:", { id: order.id, name: order.name });
 
     const pickupDateAttr = await getOrderMetafield(order.id, "custom", "pickup_date");
+    const projectNameAttr = await getOrderMetafield(order.id, "custom", "project_name");
 
     let capacity = null;
     for (const item of order.line_items) {
@@ -99,10 +97,14 @@ app.post("/webhooks/orders/create", async (req, res) => {
           body: JSON.stringify({
             order: {
               line_items: split.line_items,
+              customer: order.customer,
+              shipping_address: order.shipping_address,
+              billing_address: order.billing_address,
               tags: "split-child",
               note:
                 `Split from original order #${order.name} (ID: ${order.id})` +
                 (pickupDateAttr ? ` | Pickup Date: ${pickupDateAttr}` : "") +
+                (projectNameAttr ? ` | Project: ${projectNameAttr}` : "") +
                 ` | Truckload Capacity: ${capacity}`,
             },
           }),
@@ -124,6 +126,24 @@ app.post("/webhooks/orders/create", async (req, res) => {
                 key: "pickup_date",
                 type: "date",
                 value: pickupDateAttr,
+              },
+            }),
+          });
+        }
+
+        if (projectNameAttr) {
+          await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders/${createdOrder.order.id}/metafields.json`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-Shopify-Access-Token": ACCESS_TOKEN,
+            },
+            body: JSON.stringify({
+              metafield: {
+                namespace: "custom",
+                key: "project_name",
+                type: "single_line_text_field",
+                value: projectNameAttr,
               },
             }),
           });
@@ -162,7 +182,25 @@ app.post("/webhooks/orders/create", async (req, res) => {
         });
       }
 
-      return res.status(200).send("Split orders created, parent tagged, pickup date propagated.");
+      if (projectNameAttr) {
+        await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders/${order.id}/metafields.json`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Shopify-Access-Token": ACCESS_TOKEN,
+          },
+          body: JSON.stringify({
+            metafield: {
+              namespace: "custom",
+              key: "project_name",
+              type: "single_line_text_field",
+              value: projectNameAttr,
+            },
+          }),
+        });
+      }
+
+      return res.status(200).send("Split orders created, parent tagged, pickup date and project name propagated.");
     }
 
     console.log("🟣 Capacity not exceeded — tagging as TruckLoad-Ready");
@@ -199,6 +237,24 @@ app.post("/webhooks/orders/create", async (req, res) => {
       });
     }
 
+    if (projectNameAttr) {
+      await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders/${order.id}/metafields.json`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Shopify-Access-Token": ACCESS_TOKEN,
+        },
+        body: JSON.stringify({
+          metafield: {
+            namespace: "custom",
+            key: "project_name",
+            type: "single_line_text_field",
+            value: projectNameAttr,
+          },
+        }),
+      });
+    }
+
     res.status(200).send("Order processed: split or tagged based on truckload capacity.");
   } catch (error) {
     console.error("Webhook error:", error);
@@ -210,4 +266,3 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });
-
