@@ -58,23 +58,43 @@ app.post("/webhooks/orders/create", async (req, res) => {
       }
     }
 
-    const totalItems = order.line_items.length;
-    console.log("🔢 Total line items:", totalItems);
+    // ✅ Count total quantity, not just line item count
+    const totalQuantity = order.line_items.reduce((sum, item) => sum + item.quantity, 0);
+    console.log("🔢 Total quantity:", totalQuantity);
     console.log("📦 Truckload capacity (from product):", capacity);
 
-    if (capacity && totalItems > capacity) {
+    if (capacity && totalQuantity > capacity) {
       console.log("🚨 Capacity exceeded — splitting order");
 
-      // naive split: chunk line_items into groups of `capacity`
+      // Flatten line items into individual units
+      const flattenedItems = [];
+      for (const item of order.line_items) {
+        for (let i = 0; i < item.quantity; i++) {
+          flattenedItems.push({ ...item, quantity: 1 });
+        }
+      }
+
+      // Chunk into groups of `capacity`
       const splits = [];
-      for (let i = 0; i < totalItems; i += capacity) {
-        splits.push({
-          line_items: order.line_items.slice(i, i + capacity),
-        });
+      for (let i = 0; i < flattenedItems.length; i += capacity) {
+        const chunk = flattenedItems.slice(i, i + capacity);
+        const grouped = [];
+
+        // Group identical SKUs back together
+        for (const unit of chunk) {
+          const existing = grouped.find(g => g.variant_id === unit.variant_id);
+          if (existing) {
+            existing.quantity += 1;
+          } else {
+            grouped.push({ ...unit });
+          }
+        }
+
+        splits.push({ line_items: grouped });
       }
 
       for (const split of splits) {
-        console.log(`✂️ Creating child order with ${split.line_items.length} items`);
+        console.log(`✂️ Creating child order with ${split.line_items.reduce((sum, li) => sum + li.quantity, 0)} items`);
 
         const newOrderPayload = {
           order: {
