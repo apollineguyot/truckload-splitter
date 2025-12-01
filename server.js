@@ -28,7 +28,6 @@ app.post("/webhooks/orders/create", async (req, res) => {
     const order = req.body;
     console.log("📥 Received order:", { id: order.id, name: order.name });
 
-    // Extract project name from note_attributes
     const projectName = order.note_attributes?.find(attr => attr.name === "Project Name")?.value;
     console.log("📝 Project Name from order:", projectName);
 
@@ -109,9 +108,8 @@ app.post("/webhooks/orders/create", async (req, res) => {
           } else {
             console.log("🟢 Child order created:", JSON.stringify(createdOrder, null, 2));
 
-            // ✅ Add project name metafield to child order
             if (projectName) {
-              await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders/${createdOrder.order.id}/metafields.json`, {
+              await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/metafields.json`, {
                 method: "POST",
                 headers: {
                   "Content-Type": "application/json",
@@ -123,6 +121,8 @@ app.post("/webhooks/orders/create", async (req, res) => {
                     key: "project_name",
                     type: "single_line_text_field",
                     value: projectName,
+                    owner_id: createdOrder.order.id,
+                    owner_resource: "order",
                   },
                 }),
               });
@@ -156,9 +156,8 @@ app.post("/webhooks/orders/create", async (req, res) => {
         } else {
           console.log("🔵 Parent order tagged:", JSON.stringify(parentData, null, 2));
 
-          // ✅ Add project name metafield to parent order
           if (projectName) {
-            await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders/${order.id}/metafields.json`, {
+            await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/metafields.json`, {
               method: "POST",
               headers: {
                 "Content-Type": "application/json",
@@ -170,6 +169,8 @@ app.post("/webhooks/orders/create", async (req, res) => {
                   key: "project_name",
                   type: "single_line_text_field",
                   value: projectName,
+                  owner_id: order.id,
+                  owner_resource: "order",
                 },
               }),
             });
@@ -207,9 +208,8 @@ app.post("/webhooks/orders/create", async (req, res) => {
       } else {
         console.log("🔵 Parent order tagged:", JSON.stringify(parentData, null, 2));
 
-        // ✅ Add project name metafield to parent order (even if not split)
         if (projectName) {
-          await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders/${order.id}/metafields.json`, {
+          await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/metafields.json`, {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
@@ -221,6 +221,8 @@ app.post("/webhooks/orders/create", async (req, res) => {
                 key: "project_name",
                 type: "single_line_text_field",
                 value: projectName,
+                owner_id: order.id,
+                owner_resource: "order",
               },
             }),
           });
