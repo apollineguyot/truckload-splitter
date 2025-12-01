@@ -1,4 +1,10 @@
 {
+  "type": "module",
+  "scripts": {
+    "start": "node server.js"
+  }
+}
+{
   "name": "truckload-splitter",
   "version": "1.0.0",
   "main": "server.js",
