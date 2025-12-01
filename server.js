@@ -1,22 +1,13 @@
-// server.js — Shopify Truckload Splitter (ES Module)
-
-import express from "express";
-import bodyParser from "body-parser";
-import fetch from "node-fetch";
+const express = require("express");
+const bodyParser = require("body-parser");
+const fetch = require("node-fetch");
 
 const app = express();
 app.use(bodyParser.json());
 
-const PORT = process.env.PORT || 3000;
-const SHOP = process.env.SHOP;
+const shopBaseUrl = `https://${process.env.SHOPIFY_SHOP_DOMAIN}`;
 const ACCESS_TOKEN = process.env.SHOPIFY_ACCESS_TOKEN;
-const API_VERSION = process.env.API_VERSION || "2025-01";
-
-if (!SHOP || !ACCESS_TOKEN) {
-  console.error("❌ Missing required env vars: SHOP or SHOPIFY_ACCESS_TOKEN");
-}
-
-const shopBaseUrl = `https://${SHOP}`;
+const API_VERSION = "2025-01";
 
 // Helper: fetch product metafield
 async function getProductCapacity(productId) {
@@ -32,7 +23,6 @@ async function getProductCapacity(productId) {
   return mf ? parseInt(mf.value) : null;
 }
 
-// Webhook: orders/create
 app.post("/webhooks/orders/create", async (req, res) => {
   try {
     const order = req.body;
@@ -54,7 +44,6 @@ app.post("/webhooks/orders/create", async (req, res) => {
     if (capacity && totalQuantity > capacity) {
       console.log("🍉 Capacity exceeded — splitting order");
 
-      // Flatten line items into individual units
       const flattenedItems = [];
       for (const item of order.line_items) {
         for (let i = 0; i < item.quantity; i++) {
@@ -62,7 +51,6 @@ app.post("/webhooks/orders/create", async (req, res) => {
         }
       }
 
-      // Chunk into groups of `capacity`
       const splits = [];
       for (let i = 0; i < flattenedItems.length; i += capacity) {
         const chunk = flattenedItems.slice(i, i + capacity);
@@ -80,7 +68,6 @@ app.post("/webhooks/orders/create", async (req, res) => {
         splits.push({ line_items: grouped });
       }
 
-      // Create child orders
       for (const split of splits) {
         console.log(`✂️ Creating child order with ${split.line_items.reduce((sum, li) => sum + li.quantity, 0)} items`);
 
@@ -107,7 +94,6 @@ app.post("/webhooks/orders/create", async (req, res) => {
         console.log(`🟢 Child order created: ${createdOrder.order?.id}`);
       }
 
-      // Tag parent order
       await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders/${order.id}.json`, {
         method: "PUT",
         headers: {
@@ -148,7 +134,7 @@ app.post("/webhooks/orders/create", async (req, res) => {
   }
 });
 
-// Start server
+const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });
