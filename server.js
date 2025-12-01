@@ -28,6 +28,10 @@ app.post("/webhooks/orders/create", async (req, res) => {
     const order = req.body;
     console.log("📥 Received order:", { id: order.id, name: order.name });
 
+    // Extract project name from note_attributes
+    const projectName = order.note_attributes?.find(attr => attr.name === "Project Name")?.value;
+    console.log("📝 Project Name from order:", projectName);
+
     let capacity = null;
     for (const item of order.line_items) {
       const productCapacity = await getProductCapacity(item.product_id);
@@ -104,6 +108,26 @@ app.post("/webhooks/orders/create", async (req, res) => {
             console.error("❌ Failed to create child order:", JSON.stringify(createdOrder, null, 2));
           } else {
             console.log("🟢 Child order created:", JSON.stringify(createdOrder, null, 2));
+
+            // ✅ Add project name metafield to child order
+            if (projectName) {
+              await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders/${createdOrder.order.id}/metafields.json`, {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                  "X-Shopify-Access-Token": ACCESS_TOKEN,
+                },
+                body: JSON.stringify({
+                  metafield: {
+                    namespace: "custom",
+                    key: "project_name",
+                    type: "single_line_text_field",
+                    value: projectName,
+                  },
+                }),
+              });
+              console.log(`📝 Project name metafield set for child order ${createdOrder.order.id}: ${projectName}`);
+            }
           }
         } catch (err) {
           console.error("❌ Error creating child order:", err.message);
@@ -131,12 +155,32 @@ app.post("/webhooks/orders/create", async (req, res) => {
           console.error("❌ Failed to tag parent order:", JSON.stringify(parentData, null, 2));
         } else {
           console.log("🔵 Parent order tagged:", JSON.stringify(parentData, null, 2));
+
+          // ✅ Add project name metafield to parent order
+          if (projectName) {
+            await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders/${order.id}/metafields.json`, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "X-Shopify-Access-Token": ACCESS_TOKEN,
+              },
+              body: JSON.stringify({
+                metafield: {
+                  namespace: "custom",
+                  key: "project_name",
+                  type: "single_line_text_field",
+                  value: projectName,
+                },
+              }),
+            });
+            console.log(`📝 Project name metafield set for parent order ${order.id}: ${projectName}`);
+          }
         }
       } catch (err) {
         console.error("❌ Error tagging parent order:", err.message);
       }
 
-      return res.status(200).send("Split orders created, parent tagged.");
+      return res.status(200).send("Split orders created, parent tagged, project name applied.");
     }
 
     console.log("🟣 Capacity not exceeded — tagging as TruckLoad-Ready");
@@ -162,12 +206,32 @@ app.post("/webhooks/orders/create", async (req, res) => {
         console.error("❌ Failed to tag parent order:", JSON.stringify(parentData, null, 2));
       } else {
         console.log("🔵 Parent order tagged:", JSON.stringify(parentData, null, 2));
+
+        // ✅ Add project name metafield to parent order (even if not split)
+        if (projectName) {
+          await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders/${order.id}/metafields.json`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-Shopify-Access-Token": ACCESS_TOKEN,
+            },
+            body: JSON.stringify({
+              metafield: {
+                namespace: "custom",
+                key: "project_name",
+                type: "single_line_text_field",
+                value: projectName,
+              },
+            }),
+          });
+          console.log(`📝 Project name metafield set for parent order ${order.id}: ${projectName}`);
+        }
       }
     } catch (err) {
       console.error("❌ Error tagging parent order:", err.message);
     }
 
-    res.status(200).send("Order processed: split or tagged based on truckload capacity.");
+    res.status(200).send("Order processed: split/tagged and project name applied.");
   } catch (error) {
     console.error("❌ Webhook error:", error);
     res.status(500).send("Error processing webhook");
