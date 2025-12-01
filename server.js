@@ -12,7 +12,7 @@ const ACCESS_TOKEN = process.env.SHOPIFY_ACCESS_TOKEN;
 const API_VERSION = "2025-01"; // adjust to your current API version
 
 // Webhook endpoint
-app.post("/webhook/orders/create", async (req, res) => {
+app.post("/webhooks/orders/create", async (req, res) => {
   try {
     const order = req.body;
 
