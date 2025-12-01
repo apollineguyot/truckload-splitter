@@ -28,8 +28,10 @@ app.post("/webhooks/orders/create", async (req, res) => {
     const order = req.body;
     console.log("📥 Received order:", { id: order.id, name: order.name });
 
+    // Extract project name from note_attributes
+    console.log("🧾 note_attributes:", JSON.stringify(order.note_attributes, null, 2));
     const projectName = order.note_attributes?.find(attr => attr.name === "Project Name")?.value;
-    console.log("📝 Project Name from order:", projectName);
+    console.log("📝 Project Name resolved:", projectName);
 
     let capacity = null;
     for (const item of order.line_items) {
@@ -75,8 +77,6 @@ app.post("/webhooks/orders/create", async (req, res) => {
         console.log(`✂️ Creating child order with ${split.line_items.reduce((sum, li) => sum + li.quantity, 0)} items`);
 
         try {
-          console.log("📫 Shipping address:", JSON.stringify(order.shipping_address, null, 2));
-
           const response = await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders.json`, {
             method: "POST",
             headers: {
@@ -88,12 +88,8 @@ app.post("/webhooks/orders/create", async (req, res) => {
                 line_items: split.line_items,
                 email: order.email,
                 customer: order.customer ? { id: order.customer.id } : undefined,
-                shipping_address: order.shipping_address && typeof order.shipping_address === "object"
-                  ? order.shipping_address
-                  : undefined,
-                billing_address: order.billing_address && typeof order.billing_address === "object"
-                  ? order.billing_address
-                  : undefined,
+                shipping_address: order.shipping_address,
+                billing_address: order.billing_address,
                 tags: "split-child",
                 note: `Split from original order #${order.name} (ID: ${order.id}) | Truckload Capacity: ${capacity}`,
                 financial_status: "pending",
@@ -108,8 +104,9 @@ app.post("/webhooks/orders/create", async (req, res) => {
           } else {
             console.log("🟢 Child order created:", JSON.stringify(createdOrder, null, 2));
 
+            // ✅ Add project name metafield to child order
             if (projectName) {
-              await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/metafields.json`, {
+              const mfResp = await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/metafields.json`, {
                 method: "POST",
                 headers: {
                   "Content-Type": "application/json",
@@ -126,7 +123,8 @@ app.post("/webhooks/orders/create", async (req, res) => {
                   },
                 }),
               });
-              console.log(`📝 Project name metafield set for child order ${createdOrder.order.id}: ${projectName}`);
+              const mfData = await mfResp.json();
+              console.log("📝 Project name metafield response (child):", JSON.stringify(mfData, null, 2));
             }
           }
         } catch (err) {
@@ -156,8 +154,9 @@ app.post("/webhooks/orders/create", async (req, res) => {
         } else {
           console.log("🔵 Parent order tagged:", JSON.stringify(parentData, null, 2));
 
+          // ✅ Add project name metafield to parent order
           if (projectName) {
-            await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/metafields.json`, {
+            const mfResp = await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/metafields.json`, {
               method: "POST",
               headers: {
                 "Content-Type": "application/json",
@@ -174,7 +173,8 @@ app.post("/webhooks/orders/create", async (req, res) => {
                 },
               }),
             });
-            console.log(`📝 Project name metafield set for parent order ${order.id}: ${projectName}`);
+            const mfData = await mfResp.json();
+            console.log("📝 Project name metafield response (parent):", JSON.stringify(mfData, null, 2));
           }
         }
       } catch (err) {
@@ -208,8 +208,9 @@ app.post("/webhooks/orders/create", async (req, res) => {
       } else {
         console.log("🔵 Parent order tagged:", JSON.stringify(parentData, null, 2));
 
+        // ✅ Add project name metafield to parent order (even if not split)
         if (projectName) {
-          await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/metafields.json`, {
+          const mfResp = await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/metafields.json`, {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
@@ -226,7 +227,8 @@ app.post("/webhooks/orders/create", async (req, res) => {
               },
             }),
           });
-          console.log(`📝 Project name metafield set for parent order ${order.id}: ${projectName}`);
+          const mfData = await mfResp.json();
+          console.log("📝 Project name metafield response (parent):", JSON.stringify(mfData, null, 2));
         }
       }
     } catch (err) {
