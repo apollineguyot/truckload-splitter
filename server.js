@@ -11,8 +11,8 @@ const shopBaseUrl = `https://${process.env.SHOPIFY_SHOP_DOMAIN}`;
 const ACCESS_TOKEN = process.env.SHOPIFY_ACCESS_TOKEN;
 const API_VERSION = "2025-01";
 
-// Helper: fetch metafield value by namespace + key
-async function getMetafield(orderId, namespace, key) {
+// Helper: fetch order metafield
+async function getOrderMetafield(orderId, namespace, key) {
   const response = await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders/${orderId}/metafields.json`, {
     method: "GET",
     headers: {
@@ -25,23 +25,53 @@ async function getMetafield(orderId, namespace, key) {
   return mf ? mf.value : null;
 }
 
+// Helper: fetch product metafield
+async function getProductCapacity(productId) {
+  const response = await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/products/${productId}/metafields.json`, {
+    method: "GET",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Shopify-Access-Token": ACCESS_TOKEN,
+    },
+  });
+  const data = await response.json();
+  const mf = data.metafields.find(m => m.namespace === "custom" && m.key === "truckload_capacity");
+  return mf ? parseInt(mf.value) : null;
+}
+
 // Webhook endpoint
 app.post("/webhooks/orders/create", async (req, res) => {
   try {
     const order = req.body;
     console.log("🟠 Received order:", { id: order.id, name: order.name });
 
-    // ✅ Read pickup date and truckload capacity from metafields
-    const pickupDateAttr = await getMetafield(order.id, "custom", "pickup_date");
-    const truckloadCapacity = await getMetafield(order.id, "custom", "truckload_capacity");
-    console.log("📦 Truckload capacity:", truckloadCapacity);
+    // ✅ Read pickup date from order metafields
+    const pickupDateAttr = await getOrderMetafield(order.id, "custom", "pickup_date");
+
+    // ✅ Determine truckload capacity from products
+    let capacity = null;
+    for (const item of order.line_items) {
+      const productCapacity = await getProductCapacity(item.product_id);
+      if (productCapacity) {
+        capacity = productCapacity; // assume all items share same capacity
+        break;
+      }
+    }
+    console.log("📦 Truckload capacity (from product):", capacity);
 
     const totalItems = order.line_items.length;
-    const capacity = truckloadCapacity ? parseInt(truckloadCapacity) : null;
 
     // ✅ Split if capacity is defined and exceeded
-    if (capacity && totalItems > capacity && order.splits?.length > 0) {
-      for (const split of order.splits) {
+    if (capacity && totalItems > capacity) {
+      // naive split: chunk line_items into groups of `capacity`
+      const splits = [];
+      for (let i = 0; i < totalItems; i += capacity) {
+        splits.push({
+          line_items: order.line_items.slice(i, i + capacity),
+        });
+      }
+
+      for (const split of splits) {
         const newOrderPayload = {
           order: {
             line_items: split.line_items,
@@ -52,7 +82,7 @@ app.post("/webhooks/orders/create", async (req, res) => {
             note:
               `Split from original order #${order.name} (ID: ${order.id})` +
               (pickupDateAttr ? ` | Pickup Date: ${pickupDateAttr}` : "") +
-              ` | Truckload Capacity: ${truckloadCapacity}`,
+              ` | Truckload Capacity: ${capacity}`,
           },
         };
 
@@ -171,3 +201,4 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });
+
