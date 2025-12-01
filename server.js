@@ -72,6 +72,8 @@ app.post("/webhooks/orders/create", async (req, res) => {
         console.log(`✂️ Creating child order with ${split.line_items.reduce((sum, li) => sum + li.quantity, 0)} items`);
 
         try {
+          console.log("📫 Shipping address:", JSON.stringify(order.shipping_address, null, 2));
+
           const response = await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders.json`, {
             method: "POST",
             headers: {
@@ -83,8 +85,12 @@ app.post("/webhooks/orders/create", async (req, res) => {
                 line_items: split.line_items,
                 email: order.email,
                 customer: order.customer ? { id: order.customer.id } : undefined,
-                shipping_address: order.shipping_address,
-                billing_address: order.billing_address,
+                shipping_address: order.shipping_address && typeof order.shipping_address === "object"
+                  ? order.shipping_address
+                  : undefined,
+                billing_address: order.billing_address && typeof order.billing_address === "object"
+                  ? order.billing_address
+                  : undefined,
                 tags: "split-child",
                 note: `Split from original order #${order.name} (ID: ${order.id}) | Truckload Capacity: ${capacity}`,
                 financial_status: "pending",
