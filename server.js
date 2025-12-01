@@ -28,9 +28,11 @@ app.post("/webhooks/orders/create", async (req, res) => {
     const order = req.body;
     console.log("📥 Received order:", { id: order.id, name: order.name });
 
-    // Extract project name from note_attributes
+    // Debug note_attributes
     console.log("🧾 note_attributes:", JSON.stringify(order.note_attributes, null, 2));
-    const projectName = order.note_attributes?.find(attr => attr.name === "Project Name")?.value;
+    const projectName = order.note_attributes?.find(attr =>
+      ["Project Name", "project_name", "project-name"].includes(attr.name)
+    )?.value;
     console.log("📝 Project Name resolved:", projectName);
 
     let capacity = null;
@@ -42,6 +44,7 @@ app.post("/webhooks/orders/create", async (req, res) => {
       }
     }
 
+    console.log("🧾 Line items:", JSON.stringify(order.line_items, null, 2));
     const totalQuantity = order.line_items.reduce((sum, item) => sum + item.quantity, 0);
     console.log("📦 Truckload capacity (from product):", capacity);
     console.log("🔢 Total quantity:", totalQuantity);
