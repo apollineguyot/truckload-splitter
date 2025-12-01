@@ -71,27 +71,37 @@ app.post("/webhooks/orders/create", async (req, res) => {
       for (const split of splits) {
         console.log(`✂️ Creating child order with ${split.line_items.reduce((sum, li) => sum + li.quantity, 0)} items`);
 
-        const response = await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders.json`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "X-Shopify-Access-Token": ACCESS_TOKEN,
-          },
-          body: JSON.stringify({
-            order: {
-              line_items: split.line_items,
-              customer: order.customer,
-              shipping_address: order.shipping_address,
-              billing_address: order.billing_address,
-              email: order.email,
-              tags: "split-child",
-              note: `Split from original order #${order.name} (ID: ${order.id}) | Truckload Capacity: ${capacity}`,
+        try {
+          const response = await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders.json`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-Shopify-Access-Token": ACCESS_TOKEN,
             },
-          }),
-        });
+            body: JSON.stringify({
+              order: {
+                line_items: split.line_items,
+                email: order.email,
+                customer: order.customer ? { id: order.customer.id } : undefined,
+                shipping_address: order.shipping_address,
+                billing_address: order.billing_address,
+                tags: "split-child",
+                note: `Split from original order #${order.name} (ID: ${order.id}) | Truckload Capacity: ${capacity}`,
+                financial_status: "pending", // ✅ ensures order is created
+              },
+            }),
+          });
 
-        const createdOrder = await response.json();
-        console.log(`🟢 Child order created: ${createdOrder.order?.id}`);
+          const createdOrder = await response.json();
+
+          if (!response.ok || !createdOrder.order?.id) {
+            console.error("❌ Failed to create child order:", createdOrder);
+          } else {
+            console.log(`🟢 Child order created: ${createdOrder.order.id}`);
+          }
+        } catch (err) {
+          console.error("❌ Error creating child order:", err.message);
+        }
       }
 
       await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders/${order.id}.json`, {
