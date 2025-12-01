@@ -15,6 +15,8 @@ const API_VERSION = "2025-01"; // adjust to your current API version
 app.post("/webhooks/orders/create", async (req, res) => {
   try {
     const order = req.body;
+    console.log("🚚 Received order:", order);
+
 
     // ✅ Capture pickup date attribute
     const pickupDateAttr = order.attributes?.pickup_date || null;
