@@ -72,9 +72,18 @@ app.post("/webhooks/orders/create", async (req, res) => {
         const projectName = Array.isArray(item.properties)
           ? item.properties.find(p => p.name === "Project Name")?.value || null
           : null;
-        const pickupDateRaw = Array.isArray(item.properties)
-          ? item.properties.find(p => p.name === "Pickup Date")?.value || null
-          : null;
+
+        // ✅ Fallback: check both line item properties and cart attributes
+        const pickupDateRaw = (
+          Array.isArray(item.properties)
+            ? item.properties.find(p => p.name === "Pickup Date")?.value
+            : null
+        ) ?? (
+          Array.isArray(order.note_attributes)
+            ? order.note_attributes.find(attr => attr.name === "pickup_date")?.value
+            : null
+        );
+
         const normalizedDate = normalizeDate(pickupDateRaw);
 
         const newOrderPayload = {
