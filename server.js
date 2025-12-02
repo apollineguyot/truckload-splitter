@@ -104,7 +104,13 @@ app.post("/webhook", async (req, res) => {
       };
 
       // Example: send to Shopify API
-      await axios.post("https://your-shopify-endpoint/orders", childOrder);
+     await axios.post("https://your-store-name.myshopify.com/admin/api/2023-10/orders.json", childOrder, {
+  headers: {
+    "X-Shopify-Access-Token": process.env.SHOPIFY_API_KEY,
+    "Content-Type": "application/json"
+  }
+});
+
 
       console.log(`✅ Created child order for truckload ${truckload}`);
     } catch (err) {
