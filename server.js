@@ -32,7 +32,7 @@ app.post("/webhooks/orders/create", async (req, res) => {
     const order = req.body;
     console.log("🚚 Received order:", JSON.stringify(order, null, 2));
 
-    if ((order.tags || "").includes("Split-Processed")) {
+    if ((order.tags || "").includes("Split-Processed") || (order.tags || "").includes("Truckload Ready")) {
       console.log("↩️ Order already processed. Skipping split.");
       return res.status(200).send("Already processed");
     }
@@ -42,6 +42,8 @@ app.post("/webhooks/orders/create", async (req, res) => {
       console.log("⚠️ No line items found on order");
       return res.status(200).send("No line items");
     }
+
+    let childOrdersCreated = false;
 
     for (const item of lineItems) {
       if (!item?.product_id || !item?.variant_id) continue;
@@ -119,6 +121,8 @@ app.post("/webhooks/orders/create", async (req, res) => {
         const createdOrder = await createResp.json();
         if (!createResp.ok || !createdOrder.order?.id) continue;
 
+        childOrdersCreated = true;
+
         if (projectName) {
           await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/metafields.json`, {
             method: "POST",
@@ -141,7 +145,14 @@ app.post("/webhooks/orders/create", async (req, res) => {
       }
     }
 
-    const newTags = order.tags ? `${order.tags}, Split-Processed` : "Split-Processed";
+    // ✅ Decide whether to tag as Split-Processed or Truckload Ready
+    let newTags;
+    if (childOrdersCreated) {
+      newTags = order.tags ? `${order.tags}, Split-Processed` : "Split-Processed";
+    } else {
+      newTags = order.tags ? `${order.tags}, Truckload Ready` : "Truckload Ready";
+    }
+
     await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders/${order.id}.json`, {
       method: "PUT",
       headers: {
