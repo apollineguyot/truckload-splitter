@@ -1,91 +1,92 @@
-// server.js — updated with Diff Entry #3
-
 import express from "express";
-import bodyParser from "body-parser";
 import axios from "axios";
 import dotenv from "dotenv";
+
 dotenv.config();
 
 const app = express();
-app.use(bodyParser.json());
+app.use(express.json());
 
-const normalizeDate = (raw) => {
-  if (!raw) return null;
-  const date = new Date(raw);
-  return isNaN(date.getTime()) ? null : date.toISOString().split("T")[0];
-};
+function normalizeDate(input) {
+  if (!input) return null;
+  const date = new Date(input);
+  if (isNaN(date)) return null;
+  return date.toISOString().split("T")[0]; // YYYY-MM-DD
+}
 
 app.post("/webhook", async (req, res) => {
   const order = req.body;
   console.log("🚚 Received order:", order);
 
-  // ✅ Diff Entry #3: Global pickup date fallback from cart attributes
-  const pickupDateRaw = Array.isArray(order.note_attributes)
-    ? order.note_attributes.find(attr => attr.name === "pickup_date")?.value
-    : null;
+  const truckloadLineItems = order.line_items.filter(item =>
+    item.properties?.some(prop => prop.name === "truckload")
+  );
 
-  const normalizedPickupDate = normalizeDate(pickupDateRaw);
-  console.log("📅 Normalized pickup date:", normalizedPickupDate);
+  for (const item of truckloadLineItems) {
+    const truckloadProp = item.properties.find(prop => prop.name === "truckload");
+    const truckload = truckloadProp?.value || "Unassigned";
 
-  const projectName = order.note_attributes?.find(attr => attr.name === "project_name")?.value || null;
+    const projectNameProp = item.properties.find(prop => prop.name === "project_name");
+    const projectName = projectNameProp?.value || "Unassigned";
 
-  const truckloads = {};
-  for (const item of order.line_items) {
-    const truckload = item.properties?.find(p => p.name === "Truckload")?.value || "Unassigned";
-    if (!truckloads[truckload]) truckloads[truckload] = [];
-    truckloads[truckload].push(item);
-  }
+    const pickupDateProp = item.properties.find(prop => prop.name === "pickup_date");
+    const pickupDateRawFromLineItem = pickupDateProp?.value;
 
-  for (const [truckload, items] of Object.entries(truckloads)) {
-    const childOrderPayload = {
-      order: {
-        line_items: items.map((item) => ({
-          variant_id: item.variant_id,
-          quantity: item.quantity,
-          properties: item.properties,
-        })),
-        tags: [`Split:${truckload}`],
-        metafields: [
-          {
-            namespace: "custom",
-            key: "pickup_date",
-            type: "date",
-            value: normalizedPickupDate,
-          },
-          ...(projectName
-            ? [
-                {
-                  namespace: "custom",
-                  key: "project_name",
-                  type: "single_line_text_field",
-                  value: projectName,
-                },
-              ]
-            : []),
-        ],
-      },
+    const pickupDateRawFromCart = Array.isArray(order.note_attributes)
+      ? order.note_attributes.find(attr => attr.name === "pickup_date")?.value
+      : null;
+
+    console.log("📦 Raw pickup date from line item:", pickupDateRawFromLineItem);
+    console.log("📦 Raw pickup date from cart attribute:", pickupDateRawFromCart);
+
+    const pickupDateRaw = pickupDateRawFromLineItem || pickupDateRawFromCart;
+    const normalizedPickupDate = normalizeDate(pickupDateRaw);
+    console.log("📅 Normalized pickup date:", normalizedPickupDate);
+
+    const childOrder = {
+      line_items: [item],
+      metafields: [
+        {
+          namespace: "custom",
+          key: "truckload",
+          value: truckload,
+          type: "single_line_text_field"
+        },
+        {
+          namespace: "custom",
+          key: "project_name",
+          value: projectName,
+          type: "single_line_text_field"
+        },
+        {
+          namespace: "custom",
+          key: "pickup_date",
+          value: normalizedPickupDate,
+          type: "date"
+        }
+      ]
     };
 
     try {
       const response = await axios.post(
         `https://${process.env.SHOPIFY_STORE}/admin/api/2023-10/orders.json`,
-        childOrderPayload,
+        { order: childOrder },
         {
           headers: {
             "X-Shopify-Access-Token": process.env.SHOPIFY_ACCESS_TOKEN,
-            "Content-Type": "application/json",
-          },
+            "Content-Type": "application/json"
+          }
         }
       );
-      console.log(`✅ Created child order for truckload ${truckload}:`, response.data.order.id);
+      console.log(`✅ Created child order for truckload ${truckload}:`, response.data);
     } catch (error) {
       console.error(`❌ Failed to create child order for truckload ${truckload}:`, error.response?.data || error.message);
     }
   }
 
-  res.sendStatus(200);
+  res.status(200).send("Webhook processed");
 });
 
-app.listen(process.env.PORT || 3000, () => {
-  console.log("🚀 Server listening");
+app.listen(3000, () => {
+  console.log("🚀 Server listening on port 3000");
 });
