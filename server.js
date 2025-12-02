@@ -98,26 +98,32 @@ app.post("/webhook", async (req, res) => {
         console.warn("⚠️ Skipping pickup_date metafield; no valid date available");
       }
 
-     const childOrder = {
-  order: {
-    line_items: [item],
-    metafields
-  }
-};
+      // Shopify requires payload wrapped in { order: { ... } }
+      const childOrder = {
+        order: {
+          line_items: [item],
+          metafields
+        }
+      };
 
-
-      // Example: send to Shopify API
-     await axios.post("https:/sl5-ait-worldwide.myshopify.com/admin/api/2023-10/orders.json", childOrder, {
-  headers: {
-    "X-Shopify-Access-Token": process.env.SHOPIFY_API_KEY,
-    "Content-Type": "application/json"
-  }
-});
-
+      // Send to Shopify Admin API
+      await axios.post(
+        "https://sl5-ait-worldwide.myshopify.com/admin/api/2023-10/orders.json",
+        childOrder,
+        {
+          headers: {
+            "X-Shopify-Access-Token": process.env.SHOPIFY_API_KEY,
+            "Content-Type": "application/json"
+          }
+        }
+      );
 
       console.log(`✅ Created child order for truckload ${truckload}`);
     } catch (err) {
-      console.error(`❌ Failed to create child order for truckload ${item.truckload}:`, err.response?.data || err.message);
+      console.error(
+        `❌ Failed to create child order for truckload ${item.truckload}:`,
+        err.response?.data || err.message
+      );
     }
   }
 
@@ -127,3 +133,4 @@ app.post("/webhook", async (req, res) => {
 app.listen(3000, () => {
   console.log("🚀 Server running on port 3000");
 });
+
