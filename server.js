@@ -35,6 +35,9 @@ app.post("/webhook", async (req, res) => {
     const pickupDateRawFromCart = Array.isArray(order.note_attributes)
       ? order.note_attributes.find(attr => attr.name === "pickup_date")?.value
       : null;
+    console.log("🧾 Raw pickup date from line item:", pickupDateRawFromLineItem);
+console.log("🛒 Raw pickup date from cart attribute:", pickupDateRawFromCart);
+
 
     console.log("📦 Raw pickup date from line item:", pickupDateRawFromLineItem);
     console.log("📦 Raw pickup date from cart attribute:", pickupDateRawFromCart);
