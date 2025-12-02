@@ -98,10 +98,13 @@ app.post("/webhook", async (req, res) => {
         console.warn("⚠️ Skipping pickup_date metafield; no valid date available");
       }
 
-      const childOrder = {
-        line_items: [item],
-        metafields
-      };
+     const childOrder = {
+  order: {
+    line_items: [item],
+    metafields
+  }
+};
+
 
       // Example: send to Shopify API
      await axios.post("https:/sl5-ait-worldwide.myshopify.com/admin/api/2023-10/orders.json", childOrder, {
