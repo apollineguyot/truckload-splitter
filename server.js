@@ -93,9 +93,8 @@ app.post("/webhook", async (req, res) => {
       const orderId = response.data.order.id;
       console.log(`✅ Created child order ${orderId} for truckload ${truckload}`);
 
-      // Attach metafields
+      // Attach metafields (only project_name + pickup_date now)
       const metafields = [
-        { namespace: "custom", key: "truckload", value: truckload, type: "single_line_text_field" },
         { namespace: "custom", key: "project_name", value: order.project_name, type: "single_line_text_field" }
       ];
       if (normalizedPickupDate) {
