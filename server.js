@@ -55,26 +55,37 @@ app.post("/webhook", async (req, res) => {
     order.line_items?.[0]?.properties?.find(p => p.name === "Project Name")?.value;
   console.log("📂 Project name from parent:", projectName);
 
-  // Group items by truckload
-  const groups = {};
+  // Split items by truckload capacity
+  const groups = [];
   for (const item of order.line_items) {
-    const truckloadProp = item.properties.find(p => p.name === "truckload");
-    const truckload = truckloadProp?.value || "Unassigned";
-    if (!groups[truckload]) groups[truckload] = [];
-    groups[truckload].push(item);
+    const capacityProp = item.properties.find(p => p.name === "capacity");
+    const capacity = capacityProp ? parseInt(capacityProp.value, 10) : item.quantity;
+    const qty = item.quantity || 1;
+
+    console.log(`📦 Item ${item.title} qty=${qty}, capacity=${capacity}`);
+
+    let remaining = qty;
+    while (remaining > 0) {
+      const splitQty = Math.min(remaining, capacity);
+      const splitItem = { ...item, quantity: splitQty };
+      groups.push([splitItem]);
+      remaining -= splitQty;
+      console.log(`🔀 Split ${item.title}: created child with qty=${splitQty}, remaining=${remaining}`);
+    }
   }
 
-  for (const [truckload, items] of Object.entries(groups)) {
+  // Create child orders for each group
+  for (const [index, items] of groups.entries()) {
     try {
       // Tagging strategy
       const existingTags = order.tags || "";
       const parentTag = `parent_#${order.id}`;
-      const truckloadTag = `truckload-${truckload}`;
+      const truckloadTag = `truckload-${index + 1}`;
       const childTags = existingTags
         ? `${existingTags},split-child,${truckloadTag},child_order,${parentTag}`
         : `split-child,${truckloadTag},child_order,${parentTag}`;
 
-      // Build child order payload (billing only)
+      // Build child order payload
       const childOrder = {
         order: {
           line_items: items,
@@ -86,7 +97,7 @@ app.post("/webhook", async (req, res) => {
         }
       };
 
-      console.log(`🚚 Creating child order for truckload: ${truckload}`);
+      console.log(`🚚 Creating child order #${index + 1} with ${items.length} item(s)`);
 
       const response = await axios.post(apiUrl, childOrder, {
         headers: {
@@ -96,9 +107,9 @@ app.post("/webhook", async (req, res) => {
       });
 
       const orderId = response.data.order.id;
-      console.log(`✅ Created child order ${orderId} for truckload ${truckload}`);
+      console.log(`✅ Created child order ${orderId} (group #${index + 1})`);
 
-      // Attach metafields (project_name + pickup_date + truckload)
+      // Attach metafields (project_name + pickup_date + capacity)
       const metafields = [];
 
       if (projectName) {
@@ -119,12 +130,15 @@ app.post("/webhook", async (req, res) => {
         });
       }
 
-      metafields.push({
-        namespace: "custom",
-        key: "truckload",
-        value: truckload,
-        type: "single_line_text_field"
-      });
+      const capacityValue = items[0].properties.find(p => p.name === "capacity")?.value;
+      if (capacityValue) {
+        metafields.push({
+          namespace: "custom",
+          key: "truckload_capacity",
+          value: capacityValue,
+          type: "single_line_text_field"
+        });
+      }
 
       for (const mf of metafields) {
         await axios.post(
@@ -141,7 +155,7 @@ app.post("/webhook", async (req, res) => {
       }
     } catch (err) {
       console.error(
-        `❌ Failed to create child order for truckload ${truckload}:`,
+        `❌ Failed to create child order for group #${index + 1}:`,
         err.response?.data || err.message
       );
     }
