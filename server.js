@@ -4,7 +4,7 @@ import axios from "axios";
 const app = express();
 app.use(express.json());
 
-// Environment variables (clean + consistent)
+// Environment variables
 const SHOPIFY_STORE = process.env.SHOPIFY_STORE;
 const SHOPIFY_API_VERSION = process.env.SHOPIFY_API_VERSION;
 const SHOPIFY_ACCESS_TOKEN = process.env.SHOPIFY_ACCESS_TOKEN;
@@ -39,7 +39,7 @@ app.post("/webhook", async (req, res) => {
     return res.sendStatus(200);
   }
 
-  // Extract pickup date (fallback: line item properties → cart attributes)
+  // Extract pickup date (line item properties → cart attributes)
   let rawPickupDate =
     order.line_items?.[0]?.properties?.find(p => p.name === "pickup_date")?.value ||
     order.attributes?.find(a => a.name === "pickup_date")?.value;
@@ -55,81 +55,96 @@ app.post("/webhook", async (req, res) => {
     order.line_items?.[0]?.properties?.find(p => p.name === "Project Name")?.value;
   console.log("📂 Project name from parent:", projectName);
 
-  try {
-    // Tagging strategy (no truckload tags anymore)
-    const existingTags = order.tags || "";
-    const parentTag = `parent_#${order.id}`;
-    const childTags = existingTags
-      ? `${existingTags},split-child,child_order,${parentTag}`
-      : `split-child,child_order,${parentTag}`;
+  // Group items by truckload
+  const groups = {};
+  for (const item of order.line_items) {
+    const truckloadProp = item.properties.find(p => p.name === "truckload");
+    const truckload = truckloadProp?.value || "Unassigned";
+    if (!groups[truckload]) groups[truckload] = [];
+    groups[truckload].push(item);
+  }
 
-    // Build child order payload (baseline style: billing only)
-    const childOrder = {
-      order: {
-        line_items: order.line_items,
-        tags: childTags,
-        customer: order.customer,
-        billing_address: order.billing_address,
-        discount_applications: order.discount_applications,
-        shipping_lines: order.shipping_lines
-      }
-    };
+  for (const [truckload, items] of Object.entries(groups)) {
+    try {
+      // Tagging strategy
+      const existingTags = order.tags || "";
+      const parentTag = `parent_#${order.id}`;
+      const truckloadTag = `truckload-${truckload}`;
+      const childTags = existingTags
+        ? `${existingTags},split-child,${truckloadTag},child_order,${parentTag}`
+        : `split-child,${truckloadTag},child_order,${parentTag}`;
 
-    console.log("🚚 Creating child order (no truckload grouping)");
-
-    const response = await axios.post(apiUrl, childOrder, {
-      headers: {
-        "X-Shopify-Access-Token": SHOPIFY_ACCESS_TOKEN,
-        "Content-Type": "application/json"
-      }
-    });
-
-    const orderId = response.data.order.id;
-    console.log(`✅ Created child order ${orderId}`);
-
-    // Attach metafields (only project_name + pickup_date now)
-    const metafields = [];
-
-    if (projectName) {
-      metafields.push({
-        namespace: "custom",
-        key: "project_name",
-        value: projectName,
-        type: "single_line_text_field"
-      });
-    } else {
-      console.log("⚠️ No project name found, skipping metafield");
-    }
-
-    if (normalizedPickupDate) {
-      metafields.push({
-        namespace: "custom",
-        key: "pickup_date",
-        value: normalizedPickupDate,
-        type: "single_line_text_field"
-      });
-    } else {
-      console.log("⚠️ No pickup date found, skipping metafield");
-    }
-
-    for (const mf of metafields) {
-      await axios.post(
-        `https://${SHOPIFY_STORE}/admin/api/${SHOPIFY_API_VERSION}/orders/${orderId}/metafields.json`,
-        { metafield: mf },
-        {
-          headers: {
-            "X-Shopify-Access-Token": SHOPIFY_ACCESS_TOKEN,
-            "Content-Type": "application/json"
-          }
+      // Build child order payload (billing only)
+      const childOrder = {
+        order: {
+          line_items: items,
+          tags: childTags,
+          customer: order.customer,
+          billing_address: order.billing_address,
+          discount_applications: order.discount_applications,
+          shipping_lines: order.shipping_lines
         }
+      };
+
+      console.log(`🚚 Creating child order for truckload: ${truckload}`);
+
+      const response = await axios.post(apiUrl, childOrder, {
+        headers: {
+          "X-Shopify-Access-Token": SHOPIFY_ACCESS_TOKEN,
+          "Content-Type": "application/json"
+        }
+      });
+
+      const orderId = response.data.order.id;
+      console.log(`✅ Created child order ${orderId} for truckload ${truckload}`);
+
+      // Attach metafields (project_name + pickup_date + truckload)
+      const metafields = [];
+
+      if (projectName) {
+        metafields.push({
+          namespace: "custom",
+          key: "project_name",
+          value: projectName,
+          type: "single_line_text_field"
+        });
+      }
+
+      if (normalizedPickupDate) {
+        metafields.push({
+          namespace: "custom",
+          key: "pickup_date",
+          value: normalizedPickupDate,
+          type: "single_line_text_field"
+        });
+      }
+
+      metafields.push({
+        namespace: "custom",
+        key: "truckload",
+        value: truckload,
+        type: "single_line_text_field"
+      });
+
+      for (const mf of metafields) {
+        await axios.post(
+          `https://${SHOPIFY_STORE}/admin/api/${SHOPIFY_API_VERSION}/orders/${orderId}/metafields.json`,
+          { metafield: mf },
+          {
+            headers: {
+              "X-Shopify-Access-Token": SHOPIFY_ACCESS_TOKEN,
+              "Content-Type": "application/json"
+            }
+          }
+        );
+        console.log(`🔖 Attached metafield ${mf.key}=${mf.value} to order ${orderId}`);
+      }
+    } catch (err) {
+      console.error(
+        `❌ Failed to create child order for truckload ${truckload}:`,
+        err.response?.data || err.message
       );
-      console.log(`🔖 Attached metafield ${mf.key}=${mf.value} to order ${orderId}`);
     }
-  } catch (err) {
-    console.error(
-      "❌ Failed to create child order:",
-      err.response?.data || err.message
-    );
   }
 
   res.sendStatus(200);
@@ -138,3 +153,4 @@ app.post("/webhook", async (req, res) => {
 app.listen(3000, () => {
   console.log("🚀 Server running on port 3000");
 });
+
