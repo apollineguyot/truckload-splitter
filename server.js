@@ -1,170 +1,183 @@
 import express from "express";
-import axios from "axios";
 
 const app = express();
 app.use(express.json());
 
-// Environment variables
-const SHOPIFY_STORE = process.env.SHOPIFY_STORE;
-const SHOPIFY_API_VERSION = process.env.SHOPIFY_API_VERSION;
-const SHOPIFY_ACCESS_TOKEN = process.env.SHOPIFY_ACCESS_TOKEN;
+const PORT = process.env.PORT || 3000;
+const SHOP = process.env.SHOP;
+const ACCESS_TOKEN = process.env.SHOPIFY_ACCESS_TOKEN;
+const API_VERSION = process.env.API_VERSION || "2023-10";
 
-const apiUrl = `https://${SHOPIFY_STORE}/admin/api/${SHOPIFY_API_VERSION}/orders.json`;
-
-// Utility: normalize pickup date
-function normalizeDate(dateStr) {
-  if (!dateStr) return null;
-  try {
-    const d = new Date(dateStr);
-    if (isNaN(d.getTime())) return null;
-    return d.toISOString().split("T")[0]; // YYYY-MM-DD
-  } catch (err) {
-    console.error("❌ Failed to normalize date:", dateStr, err);
-    return null;
-  }
+if (!SHOP || !ACCESS_TOKEN) {
+  console.error("❌ Missing required env vars: SHOP or SHOPIFY_ACCESS_TOKEN");
 }
 
-// Health check route
-app.get("/", (req, res) => {
-  res.send("✅ Splitter service is running");
+const shopBaseUrl = `https://${SHOP}`;
+
+// ✅ Hardened date normalization
+function normalizeDate(input) {
+  if (!input || typeof input !== "string") return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(input)) return input;
+  const parsed = new Date(input);
+  if (!isNaN(parsed.getTime())) return parsed.toISOString().slice(0, 10);
+  return null;
+}
+
+app.get("/", (_req, res) => {
+  res.status(200).send("OK");
 });
 
-app.post("/webhook", async (req, res) => {
-  const order = req.body;
-  console.log("📦 Received order:", order.id);
+app.post("/webhooks/orders/create", async (req, res) => {
+  try {
+    const order = req.body;
+    console.log("🚚 Received order:", JSON.stringify(order, null, 2));
 
-  // Guard: skip child orders
-  if (order.tags && order.tags.includes("child_order")) {
-    console.log("⏭️ Skipping child order to avoid loop");
-    return res.sendStatus(200);
-  }
-
-  // Extract pickup date (line item properties → cart attributes)
-  let rawPickupDate =
-    order.line_items?.[0]?.properties?.find(p => p.name === "pickup_date")?.value ||
-    order.attributes?.find(a => a.name === "pickup_date")?.value;
-
-  console.log("🧾 Raw pickup date from line item:", order.line_items?.[0]?.properties?.find(p => p.name === "pickup_date")?.value);
-  console.log("🛒 Raw pickup date from cart attribute:", order.attributes?.find(a => a.name === "pickup_date")?.value);
-
-  const normalizedPickupDate = normalizeDate(rawPickupDate);
-  console.log("📅 Normalized pickup date:", normalizedPickupDate);
-
-  // Extract project name from line item properties
-  const projectName =
-    order.line_items?.[0]?.properties?.find(p => p.name === "Project Name")?.value;
-  console.log("📂 Project name from parent:", projectName);
-
-  // Split items by truckload capacity
-  const groups = [];
-  for (const item of order.line_items) {
-    const capacityProp = item.properties.find(p => p.name === "capacity");
-    const capacity = capacityProp ? parseInt(capacityProp.value, 10) : item.quantity;
-    const qty = item.quantity || 1;
-
-    console.log(`📦 Item ${item.title} qty=${qty}, capacity=${capacity}`);
-
-    let remaining = qty;
-    while (remaining > 0) {
-      const splitQty = Math.min(remaining, capacity);
-      const splitItem = { ...item, quantity: splitQty };
-      groups.push([splitItem]);
-      remaining -= splitQty;
-      console.log(`🔀 Split ${item.title}: created child with qty=${splitQty}, remaining=${remaining}`);
+    if ((order.tags || "").includes("Split-Processed")) {
+      console.log("↩️ Order already processed. Skipping split.");
+      return res.status(200).send("Already processed");
     }
-  }
 
-  // Create child orders for each group
-  for (const [index, items] of groups.entries()) {
-    try {
-      // Tagging strategy
-      const existingTags = order.tags || "";
-      const parentTag = `parent_#${order.id}`;
-      const truckloadTag = `truckload-${index + 1}`;
-      const childTags = existingTags
-        ? `${existingTags},split-child,${truckloadTag},child_order,${parentTag}`
-        : `split-child,${truckloadTag},child_order,${parentTag}`;
+    const lineItems = Array.isArray(order.line_items) ? order.line_items : [];
+    if (lineItems.length === 0) {
+      console.log("⚠️ No line items found on order");
+      return res.status(200).send("No line items");
+    }
 
-      // Build child order payload
-      const childOrder = {
-        order: {
-          line_items: items,
-          tags: childTags,
-          customer: order.customer,
-          billing_address: order.billing_address,
-          discount_applications: order.discount_applications,
-          shipping_lines: order.shipping_lines
-        }
-      };
+    for (const item of lineItems) {
+      if (!item?.product_id || !item?.variant_id) continue;
 
-      console.log(`🚚 Creating child order #${index + 1} with ${items.length} item(s)`);
-
-      const response = await axios.post(apiUrl, childOrder, {
+      const metaResp = await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/products/${item.product_id}/metafields.json`, {
+        method: "GET",
         headers: {
-          "X-Shopify-Access-Token": SHOPIFY_ACCESS_TOKEN,
-          "Content-Type": "application/json"
-        }
+          "Content-Type": "application/json",
+          "X-Shopify-Access-Token": ACCESS_TOKEN,
+        },
       });
 
-      const orderId = response.data.order.id;
-      console.log(`✅ Created child order ${orderId} (group #${index + 1})`);
+      const metaData = await metaResp.json();
+      const truckloadMeta = Array.isArray(metaData?.metafields)
+        ? metaData.metafields.find(m => m.key === "truckload_capacity" && ["custom", "logistics"].includes(m.namespace))
+        : null;
 
-      // Attach metafields (project_name + pickup_date + capacity)
-      const metafields = [];
+      const truckloadCapacity = parseInt(truckloadMeta?.value ?? "0", 10);
+      if (!Number.isFinite(truckloadCapacity) || truckloadCapacity <= 0 || item.quantity <= truckloadCapacity) continue;
 
-      if (projectName) {
-        metafields.push({
-          namespace: "custom",
-          key: "project_name",
-          value: projectName,
-          type: "single_line_text_field"
+      const fullLoads = Math.floor(item.quantity / truckloadCapacity);
+      const remainder = item.quantity % truckloadCapacity;
+      const splitQuantities = Array(fullLoads).fill(truckloadCapacity);
+      if (remainder > 0) splitQuantities.push(remainder);
+
+      for (let i = 0; i < splitQuantities.length; i++) {
+        const qty = splitQuantities[i];
+        const projectName = Array.isArray(item.properties)
+          ? item.properties.find(p => p.name === "Project Name")?.value || null
+          : null;
+        const pickupDateRaw = Array.isArray(item.properties)
+          ? item.properties.find(p => p.name === "Pickup Date")?.value || null
+          : null;
+        const normalizedDate = normalizeDate(pickupDateRaw);
+
+        const newOrderPayload = {
+          order: {
+            line_items: [{ variant_id: item.variant_id, quantity: qty }],
+            customer: order.customer ?? undefined,
+            shipping_address: order.shipping_address ?? undefined,
+            billing_address: order.billing_address ?? undefined,
+            email: order.email ?? undefined,
+            note: `Split from original order #${order.name} (ID: ${order.id})`,
+            tags: [`Split-Child`, `Truckload ${i + 1}`, `Parent-${order.name}`],
+            purchase_order_number: projectName,
+            metafields: normalizedDate
+              ? [{
+                  namespace: "custom",
+                  key: "pickup_date",
+                  type: "date",
+                  value: normalizedDate,
+                }]
+              : [],
+          },
+        };
+
+        const createResp = await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders.json`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Shopify-Access-Token": ACCESS_TOKEN,
+          },
+          body: JSON.stringify(newOrderPayload),
         });
-      }
 
-      if (normalizedPickupDate) {
-        metafields.push({
-          namespace: "custom",
-          key: "pickup_date",
-          value: normalizedPickupDate,
-          type: "single_line_text_field"
-        });
-      }
+        const createdOrder = await createResp.json();
+        if (!createResp.ok || !createdOrder.order?.id) continue;
 
-      const capacityValue = items[0].properties.find(p => p.name === "capacity")?.value;
-      if (capacityValue) {
-        metafields.push({
-          namespace: "custom",
-          key: "truckload_capacity",
-          value: capacityValue,
-          type: "single_line_text_field"
-        });
-      }
-
-      for (const mf of metafields) {
-        await axios.post(
-          `https://${SHOPIFY_STORE}/admin/api/${SHOPIFY_API_VERSION}/orders/${orderId}/metafields.json`,
-          { metafield: mf },
-          {
+        if (projectName) {
+          await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/metafields.json`, {
+            method: "POST",
             headers: {
-              "X-Shopify-Access-Token": SHOPIFY_ACCESS_TOKEN,
-              "Content-Type": "application/json"
-            }
-          }
-        );
-        console.log(`🔖 Attached metafield ${mf.key}=${mf.value} to order ${orderId}`);
+              "Content-Type": "application/json",
+              "X-Shopify-Access-Token": ACCESS_TOKEN,
+            },
+            body: JSON.stringify({
+              metafield: {
+                namespace: "custom",
+                key: "project_name",
+                type: "single_line_text_field",
+                value: projectName,
+                owner_id: createdOrder.order.id,
+                owner_resource: "order",
+              },
+            }),
+          });
+        }
       }
-    } catch (err) {
-      console.error(
-        `❌ Failed to create child order for group #${index + 1}:`,
-        err.response?.data || err.message
-      );
     }
+
+    const newTags = order.tags ? `${order.tags}, Split-Processed` : "Split-Processed";
+    await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders/${order.id}.json`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Shopify-Access-Token": ACCESS_TOKEN,
+      },
+      body: JSON.stringify({ order: { id: order.id, tags: newTags } }),
+    });
+
+    const projectNameFromNotes = Array.isArray(order.note_attributes)
+      ? order.note_attributes.find(attr => attr.name === "Project Name")?.value || null
+      : null;
+    const projectNameFallback = Array.isArray(order.line_items) && Array.isArray(order.line_items[0]?.properties)
+      ? order.line_items[0].properties.find(p => p.name === "Project Name")?.value || null
+      : null;
+    const parentProjectName = projectNameFromNotes || projectNameFallback;
+
+    if (parentProjectName) {
+      await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/metafields.json`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Shopify-Access-Token": ACCESS_TOKEN,
+        },
+        body: JSON.stringify({
+          metafield: {
+            namespace: "custom",
+            key: "project_name",
+            type: "single_line_text_field",
+            value: parentProjectName,
+            owner_id: order.id,
+            owner_resource: "order",
+          },
+        }),
+      });
+    }
+
+    res.status(200).send("Split processed");
+  } catch (err) {
+    console.error("❌ Error processing split:", err);
+    res.status(500).send("Error");
   }
-
-  res.sendStatus(200);
 });
 
-app.listen(3000, () => {
-  console.log("🚀 Server running on port 3000");
+// Start server
+app.listen(PORT, () => {
+  console.log(`🚀 Server running on port ${PORT}`);
 });
-
