@@ -82,6 +82,7 @@ app.post("/webhook", async (req, res) => {
       };
 
       console.log(`🚚 Creating child order for truckload: ${truckload}`);
+      console.log("📂 Project name from parent:", order.project_name); // NEW DEBUG LINE
 
       const response = await axios.post(apiUrl, childOrder, {
         headers: {
