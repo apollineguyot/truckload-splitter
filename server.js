@@ -69,13 +69,12 @@ app.post("/webhook", async (req, res) => {
         ? `${existingTags},split-child,${truckloadTag},child_order,${parentTag}`
         : `split-child,${truckloadTag},child_order,${parentTag}`;
 
-      // Build child order payload
+      // Build child order payload (baseline style: billing only)
       const childOrder = {
         order: {
           line_items: items,
           tags: childTags,
           customer: order.customer,
-          shipping_address: order.shipping_address,
           billing_address: order.billing_address,
           discount_applications: order.discount_applications,
           shipping_lines: order.shipping_lines
@@ -135,4 +134,3 @@ app.post("/webhook", async (req, res) => {
 app.listen(3000, () => {
   console.log("🚀 Server running on port 3000");
 });
-
