@@ -1,7 +1,7 @@
 {
-  "name": "shopify-splitter",
+  "name": "shopify-capacity-splitter",
   "version": "1.0.0",
-  "description": "Shopify order splitter service with truckload grouping, pickup date, and project name metafields",
+  "description": "Shopify order splitter service with truckload capacity logic",
   "main": "server.js",
   "type": "module",
   "scripts": {
@@ -12,3 +12,4 @@
     "express": "^4.18.2"
   }
 }
+
