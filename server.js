@@ -50,6 +50,11 @@ app.post("/webhook", async (req, res) => {
   const normalizedPickupDate = normalizeDate(rawPickupDate);
   console.log("📅 Normalized pickup date:", normalizedPickupDate);
 
+  // Extract project name from line item properties
+  const projectName =
+    order.line_items?.[0]?.properties?.find(p => p.name === "Project Name")?.value;
+  console.log("📂 Project name from parent:", projectName);
+
   // Group items by truckload
   const groups = {};
   for (const item of order.line_items) {
@@ -82,7 +87,6 @@ app.post("/webhook", async (req, res) => {
       };
 
       console.log(`🚚 Creating child order for truckload: ${truckload}`);
-      console.log("📂 Project name from parent:", order.project_name); // NEW DEBUG LINE
 
       const response = await axios.post(apiUrl, childOrder, {
         headers: {
@@ -95,9 +99,19 @@ app.post("/webhook", async (req, res) => {
       console.log(`✅ Created child order ${orderId} for truckload ${truckload}`);
 
       // Attach metafields (only project_name + pickup_date now)
-      const metafields = [
-        { namespace: "custom", key: "project_name", value: order.project_name, type: "single_line_text_field" }
-      ];
+      const metafields = [];
+
+      if (projectName) {
+        metafields.push({
+          namespace: "custom",
+          key: "project_name",
+          value: projectName,
+          type: "single_line_text_field"
+        });
+      } else {
+        console.log("⚠️ No project name found, skipping metafield");
+      }
+
       if (normalizedPickupDate) {
         metafields.push({
           namespace: "custom",
@@ -105,6 +119,8 @@ app.post("/webhook", async (req, res) => {
           value: normalizedPickupDate,
           type: "single_line_text_field"
         });
+      } else {
+        console.log("⚠️ No pickup date found, skipping metafield");
       }
 
       for (const mf of metafields) {
