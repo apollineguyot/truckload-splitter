@@ -76,7 +76,12 @@ app.post("/webhooks/orders/create", async (req, res) => {
           ? item.properties.find(p => p.name === "Pickup Date")?.value || null
           : null;
         const pickupDateNormalized = normalizeDate(pickupDateRaw);
-
+        
+ // ✅ Debug logging
+        console.log(
+          `🔎 Child order ${i + 1} — Project Name: ${projectName || "null"}, Pickup Date raw: ${pickupDateRaw || "null"}, normalized: ${pickupDateNormalized || "null"}`
+        );
+        
         const newOrderPayload = {
           order: {
             line_items: [{ variant_id: item.variant_id, quantity: qty }],
