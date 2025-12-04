@@ -131,6 +131,26 @@ app.post("/webhooks/orders/create", async (req, res) => {
         }
       }
     }
+    
+if (normalizedDate) {
+  await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/metafields.json`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Shopify-Access-Token": ACCESS_TOKEN,
+    },
+    body: JSON.stringify({
+      metafield: {
+        namespace: "custom",
+        key: "pickup_date",
+        type: "date",
+        value: normalizedDate,
+        owner_id: createdOrder.order.id,
+        owner_resource: "order",
+      },
+    }),
+  });
+}
 
     const newTags = order.tags ? `${order.tags}, Split-Processed` : "Split-Processed";
     await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders/${order.id}.json`, {
