@@ -75,7 +75,7 @@ app.post("/webhooks/orders/create", async (req, res) => {
         const pickupDateRaw = Array.isArray(item.properties)
           ? item.properties.find(p => p.name === "Pickup Date")?.value || null
           : null;
-        const normalizedDate = normalizeDate(pickupDateRaw);
+        const pickupDateNormalized = normalizeDate(pickupDateRaw);
 
         const newOrderPayload = {
           order: {
@@ -87,14 +87,7 @@ app.post("/webhooks/orders/create", async (req, res) => {
             note: `Split from original order #${order.name} (ID: ${order.id})`,
             tags: [`Split-Child`, `Truckload ${i + 1}`, `Parent-${order.name}`],
             purchase_order_number: projectName,
-            metafields: normalizedDate
-              ? [{
-                  namespace: "custom",
-                  key: "pickup_date",
-                  type: "date",
-                  value: normalizedDate,
-                }]
-              : [],
+            metafields: [], // ✅ metafields attached post-creation
           },
         };
 
@@ -123,6 +116,26 @@ app.post("/webhooks/orders/create", async (req, res) => {
                 key: "project_name",
                 type: "single_line_text_field",
                 value: projectName,
+                owner_id: createdOrder.order.id,
+                owner_resource: "order",
+              },
+            }),
+          });
+        }
+
+        if (pickupDateNormalized) {
+          await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/metafields.json`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-Shopify-Access-Token": ACCESS_TOKEN,
+            },
+            body: JSON.stringify({
+              metafield: {
+                namespace: "custom",
+                key: "pickup_date",
+                type: "date",
+                value: pickupDateNormalized,
                 owner_id: createdOrder.order.id,
                 owner_resource: "order",
               },
@@ -170,6 +183,35 @@ app.post("/webhooks/orders/create", async (req, res) => {
       });
     }
 
+    // ✅ Parent pickup date metafield
+    const pickupDateFromNotes = Array.isArray(order.note_attributes)
+      ? order.note_attributes.find(attr => attr.name === "Pickup Date")?.value || null
+      : null;
+    const pickupDateFallback = Array.isArray(order.line_items) && Array.isArray(order.line_items[0]?.properties)
+      ? order.line_items[0].properties.find(p => p.name === "Pickup Date")?.value || null
+      : null;
+    const parentPickupDate = normalizeDate(pickupDateFromNotes || pickupDateFallback);
+
+    if (parentPickupDate) {
+      await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/metafields.json`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Shopify-Access-Token": ACCESS_TOKEN,
+        },
+        body: JSON.stringify({
+          metafield: {
+            namespace: "custom",
+            key: "pickup_date",
+            type: "date",
+            value: parentPickupDate,
+            owner_id: order.id,
+            owner_resource: "order",
+          },
+        }),
+      });
+    }
+
     res.status(200).send("Split processed");
   } catch (err) {
     console.error("❌ Error processing split:", err);
@@ -177,7 +219,6 @@ app.post("/webhooks/orders/create", async (req, res) => {
   }
 });
 
-// Start server
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });
