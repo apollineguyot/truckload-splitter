@@ -23,6 +23,69 @@ function normalizeDate(input) {
   return null;
 }
 
+// 📅 Helper to reschedule fulfillAt
+async function rescheduleFulfillment(orderId, pickupDate) {
+  try {
+    const graphqlEndpoint = `${shopBaseUrl}/admin/api/${API_VERSION}/graphql.json`;
+
+    // Step 1: Get fulfillment order ID
+    const query = `
+      query {
+        order(id: "gid://shopify/Order/${orderId}") {
+          fulfillmentOrders(first: 1) {
+            edges {
+              node { id }
+            }
+          }
+        }
+      }
+    `;
+
+    const resp = await fetch(graphqlEndpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Shopify-Access-Token": ACCESS_TOKEN,
+      },
+      body: JSON.stringify({ query }),
+    });
+
+    const data = await resp.json();
+    const fulfillmentOrderId = data?.data?.order?.fulfillmentOrders?.edges?.[0]?.node?.id;
+    if (!fulfillmentOrderId) {
+      console.error("❌ No fulfillment order found for order", orderId);
+      return;
+    }
+
+    // Step 2: Reschedule fulfillAt
+    const mutation = `
+      mutation {
+        fulfillmentOrderReschedule(
+          id: "${fulfillmentOrderId}",
+          fulfillAt: "${pickupDate}T00:00:00Z"
+        ) {
+          fulfillmentOrder { id fulfillAt }
+          userErrors { field message }
+        }
+      }
+    `;
+
+    const rescheduleResp = await fetch(graphqlEndpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Shopify-Access-Token": ACCESS_TOKEN,
+      },
+      body: JSON.stringify({ query: mutation }),
+    });
+
+    const rescheduleData = await rescheduleResp.json();
+    console.log("📅 Reschedule result:", JSON.stringify(rescheduleData, null, 2));
+  } catch (err) {
+    console.error("❌ Error rescheduling fulfillAt:", err);
+  }
+}
+
 app.get("/", (_req, res) => {
   res.status(200).send("OK");
 });
@@ -146,6 +209,9 @@ app.post("/webhooks/orders/create", async (req, res) => {
               },
             }),
           });
+          // 📅 Reschedule fulfillAt for child order
+await rescheduleFulfillment(createdOrder.order.id, pickupDateNormalized);
+
         }
       }
     }
@@ -216,6 +282,9 @@ app.post("/webhooks/orders/create", async (req, res) => {
         }),
       });
     }
+    // 📅 Reschedule fulfillAt for parent order
+await rescheduleFulfillment(order.id, parentPickupDate);
+
 
     res.status(200).send("Split processed");
   } catch (err) {
