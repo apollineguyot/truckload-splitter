@@ -136,15 +136,25 @@ app.get("/", (_req, res) => {
   res.status(200).send("OK");
 });
 
-app.post("/webhooks/orders/create", async (req, res) => {
-  try {
-    const order = req.body;
-    console.log("🚚 Received order:", JSON.stringify(order, null, 2));
-
     if ((order.tags || "").includes("Split-Processed")) {
       console.log("↩️ Order already processed. Skipping split.");
+
+      // ✅ Only retry reschedule for parent order
+      const pickupDateFromNotes = Array.isArray(order.note_attributes)
+        ? order.note_attributes.find(attr => attr.name === "Pickup Date")?.value || null
+        : null;
+      const pickupDateFallback = Array.isArray(order.line_items) && Array.isArray(order.line_items[0]?.properties)
+        ? order.line_items[0].properties.find(p => p.name === "Pickup Date")?.value || null
+        : null;
+      const parentPickupDate = normalizeDate(pickupDateFromNotes || pickupDateFallback);
+
+      if (parentPickupDate) {
+        await retryRescheduleFulfillment(order.id, parentPickupDate);
+      }
+
       return res.status(200).send("Already processed");
     }
+
 
     const lineItems = Array.isArray(order.line_items) ? order.line_items : [];
     if (lineItems.length === 0) {
