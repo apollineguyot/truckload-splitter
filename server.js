@@ -68,7 +68,6 @@ async function retryRescheduleFulfillment(orderId, pickupDate, maxRetries = 3) {
   return null;
 }
 
-
 // 📅 Helper to reschedule fulfillAt
 async function rescheduleFulfillment(orderId, pickupDate) {
   try {
@@ -136,6 +135,13 @@ app.get("/", (_req, res) => {
   res.status(200).send("OK");
 });
 
+// ✅ Full webhook handler with Diff #17 and Diff #18
+app.post("/webhooks/orders/create", async (req, res) => {
+  try {
+    const order = req.body;
+    console.log("🚚 Received order:", JSON.stringify(order, null, 2));
+
+    // ✅ Diff #17: Guard against duplicate child orders
     if ((order.tags || "").includes("Split-Processed")) {
       console.log("↩️ Order already processed. Skipping split.");
 
@@ -154,7 +160,6 @@ app.get("/", (_req, res) => {
 
       return res.status(200).send("Already processed");
     }
-
 
     const lineItems = Array.isArray(order.line_items) ? order.line_items : [];
     if (lineItems.length === 0) {
@@ -195,12 +200,13 @@ app.get("/", (_req, res) => {
           ? item.properties.find(p => p.name === "Pickup Date")?.value || null
           : null;
         const pickupDateNormalized = normalizeDate(pickupDateRaw);
-        
- // ✅ Debug logging
+
+        // ✅ Debug logging
         console.log(
           `🔎 Child order ${i + 1} — Project Name: ${projectName || "null"}, Pickup Date raw: ${pickupDateRaw || "null"}, normalized: ${pickupDateNormalized || "null"}`
         );
-        
+
+        // ✅ Diff #18: Child orders start Unfulfilled
         const newOrderPayload = {
           order: {
             line_items: [{ variant_id: item.variant_id, quantity: qty }],
@@ -212,7 +218,7 @@ app.get("/", (_req, res) => {
             tags: [`Split-Child`, `Truckload ${i + 1}`, `Parent-${order.name}`],
             purchase_order_number: projectName,
             metafields: [], // ✅ metafields attached post-creation
-            fulfillment_status: "unfulfilled"
+            fulfillment_status: "unfulfilled", // 🔑 ensures Shopify generates fulfillment orders
           },
         };
 
@@ -266,12 +272,14 @@ app.get("/", (_req, res) => {
               },
             }),
           });
-await retryRescheduleFulfillment(createdOrder.order.id, pickupDateNormalized);
 
+          // Reschedule child fulfillAt to pickup date
+          await retryRescheduleFulfillment(createdOrder.order.id, pickupDateNormalized);
         }
       }
     }
 
+    // ✅ Tag parent as processed to avoid duplicates
     const newTags = order.tags ? `${order.tags}, Split-Processed` : "Split-Processed";
     await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders/${order.id}.json`, {
       method: "PUT",
@@ -282,6 +290,7 @@ await retryRescheduleFulfillment(createdOrder.order.id, pickupDateNormalized);
       body: JSON.stringify({ order: { id: order.id, tags: newTags } }),
     });
 
+    // ✅ Parent project name metafield
     const projectNameFromNotes = Array.isArray(order.note_attributes)
       ? order.note_attributes.find(attr => attr.name === "Project Name")?.value || null
       : null;
@@ -310,7 +319,7 @@ await retryRescheduleFulfillment(createdOrder.order.id, pickupDateNormalized);
       });
     }
 
-    // ✅ Parent pickup date metafield
+    // ✅ Parent pickup date metafield + reschedule
     const pickupDateFromNotes = Array.isArray(order.note_attributes)
       ? order.note_attributes.find(attr => attr.name === "Pickup Date")?.value || null
       : null;
@@ -337,9 +346,10 @@ await retryRescheduleFulfillment(createdOrder.order.id, pickupDateNormalized);
           },
         }),
       });
-    }
-await retryRescheduleFulfillment(order.id, parentPickupDate);
 
+      // Reschedule parent fulfillAt to pickup date
+      await retryRescheduleFulfillment(order.id, parentPickupDate);
+    }
 
     res.status(200).send("Split processed");
   } catch (err) {
@@ -351,3 +361,4 @@ await retryRescheduleFulfillment(order.id, parentPickupDate);
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });
+
