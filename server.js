@@ -23,6 +23,52 @@ function normalizeDate(input) {
   return null;
 }
 
+// 📅 Retry wrapper for rescheduleFulfillment
+async function retryRescheduleFulfillment(orderId, pickupDate, maxRetries = 3) {
+  let attempt = 0;
+  while (attempt < maxRetries) {
+    attempt++;
+    const graphqlEndpoint = `${shopBaseUrl}/admin/api/${API_VERSION}/graphql.json`;
+
+    // Query fulfillment orders
+    const query = `
+      query {
+        order(id: "gid://shopify/Order/${orderId}") {
+          fulfillmentOrders(first: 1) {
+            edges { node { id } }
+          }
+        }
+      }
+    `;
+
+    const resp = await fetch(graphqlEndpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Shopify-Access-Token": ACCESS_TOKEN,
+      },
+      body: JSON.stringify({ query }),
+    });
+
+    const data = await resp.json();
+    const fulfillmentOrderId = data?.data?.order?.fulfillmentOrders?.edges?.[0]?.node?.id;
+
+    if (fulfillmentOrderId) {
+      console.log(`📦 Found fulfillment order ${fulfillmentOrderId} for order ${orderId}`);
+      return await rescheduleFulfillment(orderId, pickupDate);
+    } else {
+      console.log(`❌ No fulfillment order found for order ${orderId} (attempt ${attempt})`);
+      if (attempt < maxRetries) {
+        console.log("🔁 Retrying in 2s...");
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      }
+    }
+  }
+  console.log(`⚠️ Failed to reschedule after ${maxRetries} attempts for order ${orderId}`);
+  return null;
+}
+
+
 // 📅 Helper to reschedule fulfillAt
 async function rescheduleFulfillment(orderId, pickupDate) {
   try {
@@ -209,8 +255,7 @@ app.post("/webhooks/orders/create", async (req, res) => {
               },
             }),
           });
-          // 📅 Reschedule fulfillAt for child order
-await rescheduleFulfillment(createdOrder.order.id, pickupDateNormalized);
+await retryRescheduleFulfillment(createdOrder.order.id, pickupDateNormalized);
 
         }
       }
@@ -282,8 +327,7 @@ await rescheduleFulfillment(createdOrder.order.id, pickupDateNormalized);
         }),
       });
     }
-    // 📅 Reschedule fulfillAt for parent order
-await rescheduleFulfillment(order.id, parentPickupDate);
+await retryRescheduleFulfillment(order.id, parentPickupDate);
 
 
     res.status(200).send("Split processed");
