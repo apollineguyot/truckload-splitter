@@ -212,6 +212,7 @@ app.get("/", (_req, res) => {
             tags: [`Split-Child`, `Truckload ${i + 1}`, `Parent-${order.name}`],
             purchase_order_number: projectName,
             metafields: [], // ✅ metafields attached post-creation
+            fulfillment_status: "unfulfilled"
           },
         };
 
