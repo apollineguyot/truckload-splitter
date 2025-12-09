@@ -87,7 +87,6 @@ app.post("/webhooks/orders/create", async (req, res) => {
             shipping_address: order.shipping_address ?? undefined,
             billing_address: order.billing_address ?? undefined,
             email: order.email ?? undefined,
-            note: `Split from original order #${order.name} (ID: ${order.id})`,
             tags: [`Split-Child`, `Truckload ${i + 1}`, `Parent-${order.name}`],
             purchase_order_number: projectName,
             metafields: [], // ✅ metafields attached post-creation
