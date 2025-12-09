@@ -58,7 +58,7 @@ app.post("/webhooks/orders/create", async (req, res) => {
     const order = req.body;
     console.log("🚚 Received order:", JSON.stringify(order, null, 2));
 
-    if ((order.tags || "").includes("Split-Processed")) {
+    if ((order.tags || "").includes("Split-Processed") || (order.tags || "").includes("Truckload-Ready")) {
       console.log("↩️ Order already processed. Skipping split.");
       return res.status(200).send("Already processed");
     }
@@ -72,6 +72,8 @@ app.post("/webhooks/orders/create", async (req, res) => {
     // ✅ Fetch parent pickup context
     const parentLocationId = await getParentPickupLocation(order.id);
     const parentPickupDate = getParentPickupDate(order);
+
+    let childOrdersCreated = false; // track whether any child orders were made
 
     for (const item of lineItems) {
       if (!item?.product_id || !item?.variant_id) continue;
@@ -140,7 +142,9 @@ app.post("/webhooks/orders/create", async (req, res) => {
         const createdOrder = await createResp.json();
         if (!createResp.ok || !createdOrder.order?.id) continue;
 
-        // ✅ Attach project name metafield
+        childOrdersCreated = true; // ✅ mark that at least one child was created
+
+        // Attach project name metafield
         if (projectName) {
           await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/metafields.json`, {
             method: "POST",
@@ -161,7 +165,7 @@ app.post("/webhooks/orders/create", async (req, res) => {
           });
         }
 
-        // ✅ Attach pickup date metafield (child inherits parent if none provided)
+        // Attach pickup date metafield (child inherits parent if none provided)
         const effectivePickupDate = pickupDateNormalized || parentPickupDate;
         if (effectivePickupDate) {
           await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/metafields.json`, {
@@ -185,8 +189,14 @@ app.post("/webhooks/orders/create", async (req, res) => {
       }
     }
 
-    // ✅ Tag parent order
-    const newTags = order.tags ? `${order.tags}, Split-Processed` : "Split-Processed";
+    // ✅ Tag parent order depending on split outcome
+    let newTags;
+    if (childOrdersCreated) {
+      newTags = order.tags ? `${order.tags}, Split-Processed` : "Split-Processed";
+    } else {
+      newTags = order.tags ? `${order.tags}, Truckload-Ready` : "Truckload-Ready";
+    }
+
     await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders/${order.id}.json`, {
       method: "PUT",
       headers: {
@@ -252,6 +262,7 @@ app.post("/webhooks/orders/create", async (req, res) => {
     res.status(500).send("Error");
   }
 });
+
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });
