@@ -14,6 +14,7 @@ if (!SHOP || !ACCESS_TOKEN) {
 
 const shopBaseUrl = `https://${SHOP}`;
 
+// ✅ Hardened date normalization
 function normalizeDate(input) {
   if (!input || typeof input !== "string") return null;
   if (/^\d{4}-\d{2}-\d{2}$/.test(input)) return input;
@@ -22,10 +23,18 @@ function normalizeDate(input) {
   return null;
 }
 
+// 📅 Retry wrapper for rescheduleFulfillment (Diff #22 delay + logging)
 async function retryRescheduleFulfillment(orderId, pickupDate, maxRetries = 3) {
   let attempt = 0;
   while (attempt < maxRetries) {
     attempt++;
+
+    // ⏳ Delay before first query
+    if (attempt === 1) {
+      console.log("⏳ Waiting 5s before first fulfillment query to allow Shopify to generate fulfillment order...");
+      await new Promise(resolve => setTimeout(resolve, 5000));
+    }
+
     const graphqlEndpoint = `${shopBaseUrl}/admin/api/${API_VERSION}/graphql.json`;
     const query = `
       query {
@@ -36,6 +45,7 @@ async function retryRescheduleFulfillment(orderId, pickupDate, maxRetries = 3) {
         }
       }
     `;
+
     const resp = await fetch(graphqlEndpoint, {
       method: "POST",
       headers: {
@@ -44,8 +54,10 @@ async function retryRescheduleFulfillment(orderId, pickupDate, maxRetries = 3) {
       },
       body: JSON.stringify({ query }),
     });
+
     const data = await resp.json();
     const fulfillmentOrderId = data?.data?.order?.fulfillmentOrders?.edges?.[0]?.node?.id;
+
     if (fulfillmentOrderId) {
       console.log(`📦 Found fulfillment order ${fulfillmentOrderId} for order ${orderId}`);
       return await rescheduleFulfillment(orderId, pickupDate);
@@ -61,9 +73,11 @@ async function retryRescheduleFulfillment(orderId, pickupDate, maxRetries = 3) {
   return null;
 }
 
+// 📅 Helper to reschedule fulfillAt (Diff #22 verbose logging)
 async function rescheduleFulfillment(orderId, pickupDate) {
   try {
     const graphqlEndpoint = `${shopBaseUrl}/admin/api/${API_VERSION}/graphql.json`;
+
     const query = `
       query {
         order(id: "gid://shopify/Order/${orderId}") {
@@ -73,6 +87,7 @@ async function rescheduleFulfillment(orderId, pickupDate) {
         }
       }
     `;
+
     const resp = await fetch(graphqlEndpoint, {
       method: "POST",
       headers: {
@@ -81,12 +96,14 @@ async function rescheduleFulfillment(orderId, pickupDate) {
       },
       body: JSON.stringify({ query }),
     });
+
     const data = await resp.json();
     const fulfillmentOrderId = data?.data?.order?.fulfillmentOrders?.edges?.[0]?.node?.id;
     if (!fulfillmentOrderId) {
       console.error("❌ No fulfillment order found for order", orderId);
       return;
     }
+
     const mutation = `
       mutation {
         fulfillmentOrderReschedule(
@@ -98,6 +115,7 @@ async function rescheduleFulfillment(orderId, pickupDate) {
         }
       }
     `;
+
     const rescheduleResp = await fetch(graphqlEndpoint, {
       method: "POST",
       headers: {
@@ -106,8 +124,11 @@ async function rescheduleFulfillment(orderId, pickupDate) {
       },
       body: JSON.stringify({ query: mutation }),
     });
+
     const rescheduleData = await rescheduleResp.json();
-    console.log("📅 Reschedule result:", JSON.stringify(rescheduleData, null, 2));
+
+    // 📅 Verbose logging
+    console.log("📅 Reschedule mutation response:", JSON.stringify(rescheduleData, null, 2));
   } catch (err) {
     console.error("❌ Error rescheduling fulfillAt:", err);
   }
@@ -116,7 +137,7 @@ async function rescheduleFulfillment(orderId, pickupDate) {
 app.get("/", (_req, res) => {
   res.status(200).send("OK");
 });
-// ✅ Webhook handler with Diff #17, #18, #21
+// ✅ Webhook handler with Diff #17, #18, #21, #22
 app.post("/webhooks/orders/create", async (req, res) => {
   const order = req.body;
   console.log("🚚 Received order:", JSON.stringify(order, null, 2));
@@ -184,9 +205,9 @@ app.post("/webhooks/orders/create", async (req, res) => {
             : null;
           const pickupDateNormalized = normalizeDate(pickupDateRaw);
 
-          console.log(
-            `🔎 Child order ${i + 1} — Project Name: ${projectName || "null"}, Pickup Date raw: ${pickupDateRaw || "null"}, normalized: ${pickupDateNormalized || "null"}`
-          );
+          console.log(`📅 Preparing to reschedule child order (loop ${i + 1})`);
+          console.log(`   Raw pickup date: ${pickupDateRaw}`);
+          console.log(`   Normalized pickup date: ${pickupDateNormalized}`);
 
           const newOrderPayload = {
             order: {
@@ -297,6 +318,10 @@ app.post("/webhooks/orders/create", async (req, res) => {
         : null;
       const parentPickupDate = normalizeDate(pickupDateFromNotes || pickupDateFallback);
 
+      console.log(`📅 Preparing to reschedule parent order ${order.id}`);
+      console.log(`   Raw pickup date: ${pickupDateFromNotes || pickupDateFallback}`);
+      console.log(`   Normalized pickup date: ${parentPickupDate}`);
+
       if (parentPickupDate) {
         await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/metafields.json`, {
           method: "POST",
@@ -328,3 +353,4 @@ app.post("/webhooks/orders/create", async (req, res) => {
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });
+
