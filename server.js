@@ -26,12 +26,38 @@ function normalizeDate(input) {
 app.get("/", (_req, res) => {
   res.status(200).send("OK");
 });
+// Helper: fetch parent pickup location
+async function getParentPickupLocation(orderId) {
+  const resp = await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders/${orderId}/fulfillment_orders.json`, {
+    method: "GET",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Shopify-Access-Token": ACCESS_TOKEN,
+    },
+  });
+
+  const data = await resp.json();
+  const assignedLocationId = data?.fulfillment_orders?.[0]?.assigned_location_id || null;
+  console.log(`📍 Parent assigned location: ${assignedLocationId}`);
+  return assignedLocationId;
+}
+
+// Helper: copy parent pickup date
+function getParentPickupDate(order) {
+  const pickupDateFromNotes = Array.isArray(order.note_attributes)
+    ? order.note_attributes.find(attr => attr.name === "Pickup Date")?.value || null
+    : null;
+  const pickupDateFallback = Array.isArray(order.line_items) && Array.isArray(order.line_items[0]?.properties)
+    ? order.line_items[0].properties.find(p => p.name === "Pickup Date")?.value || null
+    : null;
+  return normalizeDate(pickupDateFromNotes || pickupDateFallback);
+}
+
 app.post("/webhooks/orders/create", async (req, res) => {
   try {
     const order = req.body;
     console.log("🚚 Received order:", JSON.stringify(order, null, 2));
 
-    // Guard: skip if already processed
     if ((order.tags || "").includes("Split-Processed")) {
       console.log("↩️ Order already processed. Skipping split.");
       return res.status(200).send("Already processed");
@@ -42,6 +68,10 @@ app.post("/webhooks/orders/create", async (req, res) => {
       console.log("⚠️ No line items found on order");
       return res.status(200).send("No line items");
     }
+
+    // ✅ Fetch parent pickup context
+    const parentLocationId = await getParentPickupLocation(order.id);
+    const parentPickupDate = getParentPickupDate(order);
 
     for (const item of lineItems) {
       if (!item?.product_id || !item?.variant_id) continue;
@@ -77,20 +107,24 @@ app.post("/webhooks/orders/create", async (req, res) => {
           : null;
         const pickupDateNormalized = normalizeDate(pickupDateRaw);
 
-        // ✅ Debug logging
         console.log(`🔎 Child order ${i + 1} — Project Name: ${projectName || "null"}, Pickup Date raw: ${pickupDateRaw || "null"}, normalized: ${pickupDateNormalized || "null"}`);
 
         const newOrderPayload = {
           order: {
-            line_items: [{ variant_id: item.variant_id, quantity: qty }],
+            line_items: [{
+              variant_id: item.variant_id,
+              quantity: qty,
+              location_id: parentLocationId, // ✅ mimic parent pickup location
+            }],
             customer: order.customer ?? undefined,
             shipping_address: order.shipping_address ?? undefined,
             billing_address: order.billing_address ?? undefined,
             email: order.email ?? undefined,
+            note: `Split from original order #${order.name} (ID: ${order.id})`,
             tags: [`Split-Child`, `Truckload ${i + 1}`, `Parent-${order.name}`],
             purchase_order_number: projectName,
-            metafields: [], // ✅ metafields attached post-creation
-            fulfillment_status: "unfulfilled", // keep child orders unfulfilled
+            metafields: [],
+            fulfillment_status: "unfulfilled",
           },
         };
 
@@ -106,6 +140,7 @@ app.post("/webhooks/orders/create", async (req, res) => {
         const createdOrder = await createResp.json();
         if (!createResp.ok || !createdOrder.order?.id) continue;
 
+        // ✅ Attach project name metafield
         if (projectName) {
           await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/metafields.json`, {
             method: "POST",
@@ -126,7 +161,9 @@ app.post("/webhooks/orders/create", async (req, res) => {
           });
         }
 
-        if (pickupDateNormalized) {
+        // ✅ Attach pickup date metafield (child inherits parent if none provided)
+        const effectivePickupDate = pickupDateNormalized || parentPickupDate;
+        if (effectivePickupDate) {
           await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/metafields.json`, {
             method: "POST",
             headers: {
@@ -138,7 +175,7 @@ app.post("/webhooks/orders/create", async (req, res) => {
                 namespace: "custom",
                 key: "pickup_date",
                 type: "date",
-                value: pickupDateNormalized,
+                value: effectivePickupDate,
                 owner_id: createdOrder.order.id,
                 owner_resource: "order",
               },
@@ -189,14 +226,6 @@ app.post("/webhooks/orders/create", async (req, res) => {
     }
 
     // ✅ Parent pickup date metafield
-    const pickupDateFromNotes = Array.isArray(order.note_attributes)
-      ? order.note_attributes.find(attr => attr.name === "Pickup Date")?.value || null
-      : null;
-    const pickupDateFallback = Array.isArray(order.line_items) && Array.isArray(order.line_items[0]?.properties)
-      ? order.line_items[0].properties.find(p => p.name === "Pickup Date")?.value || null
-      : null;
-    const parentPickupDate = normalizeDate(pickupDateFromNotes || pickupDateFallback);
-
     if (parentPickupDate) {
       await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/metafields.json`, {
         method: "POST",
