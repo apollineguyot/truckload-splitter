@@ -111,24 +111,26 @@ app.post("/webhooks/orders/create", async (req, res) => {
 
         console.log(`🔎 Child order ${i + 1} — Project Name: ${projectName || "null"}, Pickup Date raw: ${pickupDateRaw || "null"}, normalized: ${pickupDateNormalized || "null"}`);
 
-        const newOrderPayload = {
-          order: {
-            line_items: [{
-              variant_id: item.variant_id,
-              quantity: qty,
-              location_id: parentLocationId, // ✅ mimic parent pickup location
-            }],
-            customer: order.customer ?? undefined,
-            shipping_address: order.shipping_address ?? undefined,
-            billing_address: order.billing_address ?? undefined,
-            email: order.email ?? undefined,
-            note: `Split from original order #${order.name} (ID: ${order.id})`,
-            tags: [`Split-Child`, `Truckload ${i + 1}`, `Parent-${order.name}`],
-            purchase_order_number: projectName,
-            metafields: [],
-            fulfillment_status: "unfulfilled",
-          },
-        };
+      const newOrderPayload = {
+  order: {
+    line_items: [{
+      variant_id: item.variant_id,
+      quantity: qty,
+      location_id: parentLocationId,
+    }],
+    customer: order.customer ?? undefined,
+    shipping_address: order.shipping_address ?? undefined,
+    billing_address: order.billing_address ?? undefined,
+    email: order.email ?? undefined,
+-   note: `Split from original order #${order.name} (ID: ${order.id})`,
++   note: order.note || null,
+    tags: [`Split-Child`, `Truckload ${i + 1}`, `Parent-${order.name}`],
+    purchase_order_number: projectName,
+    metafields: [],
+    fulfillment_status: "unfulfilled",
+  },
+};
+
 
         const createResp = await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders.json`, {
           method: "POST",
