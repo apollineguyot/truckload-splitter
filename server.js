@@ -1,7 +1,5 @@
 import express from "express";
 
-console.log(`🔔 Webhook fired for order ${order.id} at ${new Date().toISOString()}`);
-
 const app = express();
 app.use(express.json());
 
