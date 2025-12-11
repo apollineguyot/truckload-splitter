@@ -207,7 +207,9 @@ if (effectivePickupDate) {
     }),
   });
 }
-} // <-- closes the inner for-loop
+} // closes the inner for-loop
+} // closes the outer for (const item of lineItems) loop
+
 
 
     // ✅ Tag parent order depending on split outcome
