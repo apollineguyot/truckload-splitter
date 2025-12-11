@@ -99,107 +99,116 @@ app.post("/webhooks/orders/create", async (req, res) => {
       const splitQuantities = Array(fullLoads).fill(truckloadCapacity);
       if (remainder > 0) splitQuantities.push(remainder);
 
-      for (let i = 0; i < splitQuantities.length; i++) {
-        const qty = splitQuantities[i];
-        const projectName = Array.isArray(item.properties)
-          ? item.properties.find(p => p.name === "Project Name")?.value || null
-          : null;
-        const pickupDateRaw = Array.isArray(item.properties)
-          ? item.properties.find(p => p.name === "Pickup Date")?.value || null
-          : null;
-        const pickupDateNormalized = normalizeDate(pickupDateRaw);
+// Debug: log the split array once per product
+console.log(`Split quantities for ${item.title}:`, splitQuantities);
 
-        console.log(`🔎 Child order ${i + 1} — Project Name: ${projectName || "null"}, Pickup Date raw: ${pickupDateRaw || "null"}, normalized: ${pickupDateNormalized || "null"}`);
+// Track processed splits to avoid duplicates
+let processed = new Set();
 
-const warehouseNote = Array.isArray(item.properties)
-  ? item.properties.find(p => p.name === "Customer Note")?.value || null
-  : null;
+for (let i = 0; i < splitQuantities.length; i++) {
+  const qty = splitQuantities[i];
+  const key = `${item.variant_id}-${qty}-${i}`;
+  if (processed.has(key)) {
+    console.log(`⚠️ Skipping duplicate split for ${item.title}, qty ${qty}`);
+    continue;
+  }
+  processed.add(key);
 
-let childNote = "";
-if (pickupDateNormalized) childNote += "Pickup Date: " + pickupDateNormalized;
-if (pickupDateNormalized && warehouseNote) childNote += " | ";
-if (warehouseNote) childNote += "Warehouse Instructions: " + warehouseNote;
+  const projectName = Array.isArray(item.properties)
+    ? item.properties.find(p => p.name === "Project Name")?.value || null
+    : null;
+  const pickupDateRaw = Array.isArray(item.properties)
+    ? item.properties.find(p => p.name === "Pickup Date")?.value || null
+    : null;
+  const pickupDateNormalized = normalizeDate(pickupDateRaw);
+  const warehouseNote = Array.isArray(item.properties)
+    ? item.properties.find(p => p.name === "Customer Note")?.value || null
+    : null;
 
-        
-const newOrderPayload = {
-  order: {
-    line_items: [{
-      variant_id: item.variant_id,
-      quantity: qty,
-      location_id: parentLocationId,
-    }],
-    customer: order.customer ?? undefined,
-    shipping_address: order.shipping_address ?? undefined,
-    billing_address: order.billing_address ?? undefined,
-    email: order.email ?? undefined,
-    note: childNote || null,   // ✅ per-child note
-    tags: [`Split-Child`, `Truckload ${i + 1}`, `Parent-${order.name}`],
-    purchase_order_number: projectName,
-    metafields: [],
-    fulfillment_status: "unfulfilled",
+  let childNote = "";
+  if (pickupDateNormalized) childNote += "Pickup Date: " + pickupDateNormalized;
+  if (pickupDateNormalized && warehouseNote) childNote += " | ";
+  if (warehouseNote) childNote += "Warehouse Instructions: " + warehouseNote;
+
+  console.log(`🔎 Child order ${i + 1} — Note: ${childNote}`);
+
+  const newOrderPayload = {
+    order: {
+      line_items: [{
+        variant_id: item.variant_id,
+        quantity: qty,
+        location_id: parentLocationId,
+      }],
+      customer: order.customer ?? undefined,
+      shipping_address: order.shipping_address ?? undefined,
+      billing_address: order.billing_address ?? undefined,
+      email: order.email ?? undefined,
+      note: childNote || null,   // ✅ per-child note
+      tags: [`Split-Child`, `Truckload ${i + 1}`, `Parent-${order.name}`],
+      purchase_order_number: projectName,
+      metafields: [],
+      fulfillment_status: "unfulfilled",
+    },
+  };
+
+const createResp = await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders.json`, {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    "X-Shopify-Access-Token": ACCESS_TOKEN,
   },
-};
+  body: JSON.stringify(newOrderPayload),
+});
 
+const createdOrder = await createResp.json();
+if (!createResp.ok || !createdOrder.order?.id) continue;
 
+childOrdersCreated = true;
 
-        const createResp = await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders.json`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "X-Shopify-Access-Token": ACCESS_TOKEN,
-          },
-          body: JSON.stringify(newOrderPayload),
-        });
+// Attach project name metafield
+if (projectName) {
+  await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/metafields.json`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Shopify-Access-Token": ACCESS_TOKEN,
+    },
+    body: JSON.stringify({
+      metafield: {
+        namespace: "custom",
+        key: "project_name",
+        type: "single_line_text_field",
+        value: projectName,
+        owner_id: createdOrder.order.id,
+        owner_resource: "order",
+      },
+    }),
+  });
+}
 
-        const createdOrder = await createResp.json();
-        if (!createResp.ok || !createdOrder.order?.id) continue;
+// Attach pickup date metafield
+const effectivePickupDate = pickupDateNormalized || parentPickupDate;
+if (effectivePickupDate) {
+  await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/metafields.json`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Shopify-Access-Token": ACCESS_TOKEN,
+    },
+    body: JSON.stringify({
+      metafield: {
+        namespace: "custom",
+        key: "pickup_date",
+        type: "date",
+        value: effectivePickupDate,
+        owner_id: createdOrder.order.id,
+        owner_resource: "order",
+      },
+    }),
+  });
+}
+} // <-- closes the inner for-loop
 
-        childOrdersCreated = true; // ✅ mark that at least one child was created
-
-        // Attach project name metafield
-        if (projectName) {
-          await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/metafields.json`, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "X-Shopify-Access-Token": ACCESS_TOKEN,
-            },
-            body: JSON.stringify({
-              metafield: {
-                namespace: "custom",
-                key: "project_name",
-                type: "single_line_text_field",
-                value: projectName,
-                owner_id: createdOrder.order.id,
-                owner_resource: "order",
-              },
-            }),
-          });
-        }
-
-        // Attach pickup date metafield (child inherits parent if none provided)
-        const effectivePickupDate = pickupDateNormalized || parentPickupDate;
-        if (effectivePickupDate) {
-          await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/metafields.json`, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "X-Shopify-Access-Token": ACCESS_TOKEN,
-            },
-            body: JSON.stringify({
-              metafield: {
-                namespace: "custom",
-                key: "pickup_date",
-                type: "date",
-                value: effectivePickupDate,
-                owner_id: createdOrder.order.id,
-                owner_resource: "order",
-              },
-            }),
-          });
-        }
-      }
-    }
 
     // ✅ Tag parent order depending on split outcome
     let newTags;
