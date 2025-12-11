@@ -111,7 +111,17 @@ app.post("/webhooks/orders/create", async (req, res) => {
 
         console.log(`🔎 Child order ${i + 1} — Project Name: ${projectName || "null"}, Pickup Date raw: ${pickupDateRaw || "null"}, normalized: ${pickupDateNormalized || "null"}`);
 
-      const newOrderPayload = {
+const warehouseNote = Array.isArray(item.properties)
+  ? item.properties.find(p => p.name === "Customer Note")?.value || null
+  : null;
+
+let childNote = "";
+if (pickupDateNormalized) childNote += "Pickup Date: " + pickupDateNormalized;
+if (pickupDateNormalized && warehouseNote) childNote += " | ";
+if (warehouseNote) childNote += "Warehouse Instructions: " + warehouseNote;
+
+        
+const newOrderPayload = {
   order: {
     line_items: [{
       variant_id: item.variant_id,
@@ -122,13 +132,14 @@ app.post("/webhooks/orders/create", async (req, res) => {
     shipping_address: order.shipping_address ?? undefined,
     billing_address: order.billing_address ?? undefined,
     email: order.email ?? undefined,
-    note: order.note || null,
+    note: childNote || null,   // ✅ per-child note
     tags: [`Split-Child`, `Truckload ${i + 1}`, `Parent-${order.name}`],
     purchase_order_number: projectName,
     metafields: [],
     fulfillment_status: "unfulfilled",
   },
 };
+
 
 
         const createResp = await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders.json`, {
