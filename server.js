@@ -75,6 +75,8 @@ app.post("/webhooks/orders/create", async (req, res) => {
 
     let childOrdersCreated = false; // track whether any child orders were made
 
+let processed = new Set();   // ✅ declare once for the whole order
+    
     for (const item of lineItems) {
       if (!item?.product_id || !item?.variant_id) continue;
 
@@ -102,12 +104,9 @@ app.post("/webhooks/orders/create", async (req, res) => {
 // Debug: log the split array once per product
 console.log(`Split quantities for ${item.title}:`, splitQuantities);
 
-// Track processed splits to avoid duplicates
-let processed = new Set();
-
 for (let i = 0; i < splitQuantities.length; i++) {
   const qty = splitQuantities[i];
-const key = `${item.variant_id}-${qty}`;
+const key = `${item.product_id}-${item.variant_id}-${qty}`;
   if (processed.has(key)) {
     console.log(`⚠️ Skipping duplicate split for ${item.title}, qty ${qty}`);
     continue;
