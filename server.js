@@ -156,6 +156,8 @@ const key = `${item.variant_id}-${qty}`;
     },
   };
 
+  console.log("🧾 Creating child order:", JSON.stringify(newOrderPayload, null, 2));
+  
 const createResp = await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders.json`, {
   method: "POST",
   headers: {
