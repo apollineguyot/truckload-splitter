@@ -107,7 +107,7 @@ let processed = new Set();
 
 for (let i = 0; i < splitQuantities.length; i++) {
   const qty = splitQuantities[i];
-  const key = `${item.variant_id}-${qty}-${i}`;
+const key = `${item.variant_id}-${qty}`;
   if (processed.has(key)) {
     console.log(`⚠️ Skipping duplicate split for ${item.title}, qty ${qty}`);
     continue;
@@ -144,7 +144,12 @@ for (let i = 0; i < splitQuantities.length; i++) {
       billing_address: order.billing_address ?? undefined,
       email: order.email ?? undefined,
       note: childNote || null,   // ✅ per-child note
-      tags: [`Split-Child`, `Truckload ${i + 1}`, `Parent-${order.name}`],
+     tags: [
+  `Split-Child`,
+  `Truckload ${i + 1}`,
+  `Parent-${order.name}`,
+  `Product-${item.product_id}`   // ✅ add this
+],
       purchase_order_number: projectName,
       metafields: [],
       fulfillment_status: "unfulfilled",
