@@ -170,6 +170,8 @@ const createResp = await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders.j
 const createdOrder = await createResp.json();
 if (!createResp.ok || !createdOrder.order?.id) continue;
 
+console.log(`✅ Created child order ${createdOrder.order.id} with tags: ${createdOrder.order.tags}`);  
+  
 childOrdersCreated = true;
 
 // Attach project name metafield
