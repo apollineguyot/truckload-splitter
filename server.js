@@ -71,6 +71,12 @@ app.post("/webhooks/orders/create", async (req, res) => {
     const order = req.body;
     console.log(`🔔 Webhook fired for order ${order.id} at ${new Date().toISOString()}`);
 
+    // 🚫 Skip child orders immediately
+    if ((order.tags || "").includes("Split-Child")) {
+      console.log("↩️ Child order detected. Skipping split.");
+      return res.status(200).send("Child order skipped");
+    }
+
     // ✅ Double‑check parent order tags from Shopify before splitting
     const latestParent = await getParentOrder(order.id);
     if ((latestParent.tags || "").includes("Split-Processed") || (latestParent.tags || "").includes("Truckload-Ready")) {
@@ -88,9 +94,10 @@ app.post("/webhooks/orders/create", async (req, res) => {
     const parentLocationId = await getParentPickupLocation(order.id);
     const parentPickupDate = getParentPickupDate(order);
 
-    let childOrdersCreated = false; // track whether any child orders were made
-    let processed = new Set();      // ✅ declare once for the whole order
+    let childOrdersCreated = false;
+    let processed = new Set();
 
+    // ✅ Outer loop over line items
     for (const item of lineItems) {
       if (!item?.product_id || !item?.variant_id) continue;
 
@@ -117,6 +124,7 @@ app.post("/webhooks/orders/create", async (req, res) => {
 
       console.log(`Split quantities for ${item.title}:`, splitQuantities);
 
+      // ✅ Inner loop over split quantities
       for (let i = 0; i < splitQuantities.length; i++) {
         const qty = splitQuantities[i];
         const key = `${item.product_id}-${item.variant_id}-${qty}`;
@@ -125,6 +133,9 @@ app.post("/webhooks/orders/create", async (req, res) => {
           continue;
         }
         processed.add(key);
+
+        // 👉 Child order creation block goes here (next section)
+        // ✅ Child order creation block
         const projectName = Array.isArray(item.properties)
           ? item.properties.find(p => p.name === "Project Name")?.value || null
           : null;
@@ -305,4 +316,3 @@ app.post("/webhooks/orders/create", async (req, res) => {
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });
-
