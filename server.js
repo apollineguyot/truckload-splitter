@@ -122,38 +122,26 @@ app.post("/webhooks/orders/create", async (req, res) => {
 
       console.log(`Split quantities for ${item.title}:`, splitQuantities);
 
-      // ✅ Inner loop over split quantities (Diff Entry #17 applied)
-      for (let i = 0; i < splitQuantities.length; i++) {
-        const qty = splitQuantities[i];
+const projectName = Array.isArray(item.properties)
+  ? item.properties.find(p => p.name === "Project Name")?.value || null
+  : null;
+const pickupDateRaw = Array.isArray(item.properties)
+  ? item.properties.find(p => p.name === "Pickup Date")?.value || null
+  : null;
+const pickupDateNormalized = normalizeDate(pickupDateRaw);
 
-        // ✅ Verbose logging for traceability
-        const projectName = Array.isArray(item.properties)
-          ? item.properties.find(p => p.name === "Project Name")?.value || null
-          : null;
-        const pickupDateRaw = Array.isArray(item.properties)
-          ? item.properties.find(p => p.name === "Pickup Date")?.value || null
-          : null;
-        const pickupDateNormalized = normalizeDate(pickupDateRaw);
-        const warehouseNote = order.note || null;
+// ✅ Only use order.note for warehouse instructions
+const warehouseInstructions = order.note || null;
 
-        console.log("📦 Splitting line item:", {
-          line_item_id: item.id,
-          product_id: item.product_id,
-          variant_id: item.variant_id,
-          title: item.title,
-          original_quantity: item.quantity,
-          split_quantity: qty,
-          pickup_date: pickupDateNormalized,
-          project_name: projectName,
-          warehouse_instructions: warehouseNote,
-        });
+// Build childNote cleanly
+let childNoteParts = [];
+if (pickupDateNormalized) childNoteParts.push(`Pickup Date: ${pickupDateNormalized}`);
+if (warehouseInstructions) childNoteParts.push(`Warehouse Instructions: ${warehouseInstructions}`);
 
-        let childNote = "";
-        if (pickupDateNormalized) childNote += "Pickup Date: " + pickupDateNormalized;
-        if (pickupDateNormalized && warehouseNote) childNote += " | ";
-        if (warehouseNote) childNote += "Warehouse Instructions: " + warehouseNote;
+const childNote = childNoteParts.join(" | ");
 
-        console.log(`🔎 Child order ${i + 1} — Note: ${childNote}`);
+console.log(`🔎 Child order ${i + 1} — Note: ${childNote}`);
+
 
         const newOrderPayload = {
           order: {
