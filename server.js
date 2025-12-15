@@ -13,7 +13,6 @@ if (!SHOP || !ACCESS_TOKEN) {
 }
 
 const shopBaseUrl = `https://${SHOP}`;
-
 // ✅ Hardened date normalization
 function normalizeDate(input) {
   if (!input || typeof input !== "string") return null;
@@ -95,7 +94,6 @@ app.post("/webhooks/orders/create", async (req, res) => {
     const parentPickupDate = getParentPickupDate(order);
 
     let childOrdersCreated = false;
-    let processed = new Set();
 
     // ✅ Outer loop over line items
     for (const item of lineItems) {
@@ -124,18 +122,11 @@ app.post("/webhooks/orders/create", async (req, res) => {
 
       console.log(`Split quantities for ${item.title}:`, splitQuantities);
 
-      // ✅ Inner loop over split quantities
+      // ✅ Inner loop over split quantities (Diff Entry #17 applied)
       for (let i = 0; i < splitQuantities.length; i++) {
         const qty = splitQuantities[i];
-        const key = `${item.product_id}-${item.variant_id}-${qty}`;
-        if (processed.has(key)) {
-          console.log(`⚠️ Skipping duplicate split for ${item.title}, qty ${qty}`);
-          continue;
-        }
-        processed.add(key);
 
-        // 👉 Child order creation block goes here (next section)
-        // ✅ Child order creation block
+        // ✅ Verbose logging for traceability
         const projectName = Array.isArray(item.properties)
           ? item.properties.find(p => p.name === "Project Name")?.value || null
           : null;
@@ -143,9 +134,19 @@ app.post("/webhooks/orders/create", async (req, res) => {
           ? item.properties.find(p => p.name === "Pickup Date")?.value || null
           : null;
         const pickupDateNormalized = normalizeDate(pickupDateRaw);
-        const warehouseNote = Array.isArray(item.properties)
-          ? item.properties.find(p => p.name === "Customer Note")?.value || null
-          : null;
+        const warehouseNote = order.note || null;
+
+        console.log("📦 Splitting line item:", {
+          line_item_id: item.id,
+          product_id: item.product_id,
+          variant_id: item.variant_id,
+          title: item.title,
+          original_quantity: item.quantity,
+          split_quantity: qty,
+          pickup_date: pickupDateNormalized,
+          project_name: projectName,
+          warehouse_instructions: warehouseNote,
+        });
 
         let childNote = "";
         if (pickupDateNormalized) childNote += "Pickup Date: " + pickupDateNormalized;
@@ -170,7 +171,8 @@ app.post("/webhooks/orders/create", async (req, res) => {
               `Split-Child`,
               `Truckload ${i + 1}`,
               `Parent-${order.name}`,
-              `Product-${item.product_id}`
+              `Product-${item.product_id}`,
+              `LineItem-${item.id}`
             ],
             purchase_order_number: projectName,
             metafields: [],
@@ -178,7 +180,7 @@ app.post("/webhooks/orders/create", async (req, res) => {
           },
         };
 
-        console.log("🧾 Creating child order:", JSON.stringify(newOrderPayload, null, 2));
+        console.log("🧾 Creating child order payload:", JSON.stringify(newOrderPayload, null, 2));
 
         const createResp = await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders.json`, {
           method: "POST",
@@ -239,6 +241,7 @@ app.post("/webhooks/orders/create", async (req, res) => {
         }
       }
     }
+
     // ✅ Tag parent order depending on split outcome
     let newTags;
     if (childOrdersCreated) {
@@ -312,7 +315,7 @@ app.post("/webhooks/orders/create", async (req, res) => {
     res.status(500).send("Error");
   }
 });
-
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });
+
