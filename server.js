@@ -78,7 +78,7 @@ async function getParentPickupLocation(orderId) {
 // Section 2: Webhook Handler Start
 // =========================
 
-app.post("/webhooks", async (req, res) => {
+app.post("/webhook", async (req, res) => {
   try {
     const order = req.body;
 
