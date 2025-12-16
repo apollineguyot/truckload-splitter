@@ -134,17 +134,22 @@ app.post("/webhooks/orders/create", async (req, res) => {
           : null;
         const pickupDateNormalized = normalizeDate(pickupDateRaw);
 
-        // ✅ Only use order.note for warehouse instructions
-        const warehouseInstructions = order.note || null;
+// Extract warehouse instructions cleanly from parent note
+let warehouseInstructions = null;
+if (order.note) {
+  // Strip out any pickup date text if present
+  warehouseInstructions = order.note.replace(/Pickup Date:[^|]+(\|)?/, "").trim();
+  if (warehouseInstructions === "") warehouseInstructions = null;
+}
 
-        // Build childNote cleanly
-        let childNoteParts = [];
-        if (pickupDateNormalized) childNoteParts.push(`Pickup Date: ${pickupDateNormalized}`);
-        if (warehouseInstructions) childNoteParts.push(`Warehouse Instructions: ${warehouseInstructions}`);
+// Build childNote cleanly
+let childNoteParts = [];
+if (pickupDateNormalized) childNoteParts.push(`Pickup Date: ${pickupDateNormalized}`);
+if (warehouseInstructions) childNoteParts.push(`Warehouse Instructions: ${warehouseInstructions}`);
 
-        const childNote = childNoteParts.join(" | ");
+const childNote = childNoteParts.join(" | ");
+console.log(`🔎 Child order ${i + 1} — Note: ${childNote}`);
 
-        console.log(`🔎 Child order ${i + 1} — Note: ${childNote}`);
 
         const newOrderPayload = {
           order: {
