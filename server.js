@@ -13,6 +13,7 @@ if (!SHOP || !ACCESS_TOKEN) {
 }
 
 const shopBaseUrl = `https://${SHOP}`;
+
 // ✅ Hardened date normalization
 function normalizeDate(input) {
   if (!input || typeof input !== "string") return null;
@@ -83,6 +84,18 @@ app.post("/webhooks/orders/create", async (req, res) => {
       return res.status(200).send("Already processed");
     }
 
+    // 🏷️ Tag parent immediately to prevent duplicate splits
+    const newTags = order.tags ? `${order.tags}, Split-Processed` : "Split-Processed";
+    await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders/${order.id}.json`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Shopify-Access-Token": ACCESS_TOKEN,
+      },
+      body: JSON.stringify({ order: { id: order.id, tags: newTags } }),
+    });
+    console.log(`🏷️ Parent ${order.name} tagged as Split-Processed before child creation`);
+
     const lineItems = Array.isArray(order.line_items) ? order.line_items : [];
     if (lineItems.length === 0) {
       console.log("⚠️ No line items found on order");
@@ -94,7 +107,6 @@ app.post("/webhooks/orders/create", async (req, res) => {
     const parentPickupDate = getParentPickupDate(order);
 
     let childOrdersCreated = false;
-
     // ✅ Outer loop over line items
     for (const item of lineItems) {
       if (!item?.product_id || !item?.variant_id) continue;
@@ -134,22 +146,21 @@ app.post("/webhooks/orders/create", async (req, res) => {
           : null;
         const pickupDateNormalized = normalizeDate(pickupDateRaw);
 
-// Extract warehouse instructions cleanly from parent note
-let warehouseInstructions = null;
-if (order.note) {
-  // Strip out any pickup date text if present
-  warehouseInstructions = order.note.replace(/Pickup Date:[^|]+(\|)?/, "").trim();
-  if (warehouseInstructions === "") warehouseInstructions = null;
-}
+        // Extract warehouse instructions cleanly from parent note
+        let warehouseInstructions = null;
+        if (order.note) {
+          // Strip out any pickup date text if present
+          warehouseInstructions = order.note.replace(/Pickup Date:[^|]+(\|)?/, "").trim();
+          if (warehouseInstructions === "") warehouseInstructions = null;
+        }
 
-// Build childNote cleanly
-let childNoteParts = [];
-if (pickupDateNormalized) childNoteParts.push(`Pickup Date: ${pickupDateNormalized}`);
-if (warehouseInstructions) childNoteParts.push(`Warehouse Instructions: ${warehouseInstructions}`);
+        // Build childNote cleanly
+        let childNoteParts = [];
+        if (pickupDateNormalized) childNoteParts.push(`Pickup Date: ${pickupDateNormalized}`);
+        if (warehouseInstructions) childNoteParts.push(`Warehouse Instructions: ${warehouseInstructions}`);
 
-const childNote = childNoteParts.join(" | ");
-console.log(`🔎 Child order ${i + 1} — Note: ${childNote}`);
-
+        const childNote = childNoteParts.join(" | ");
+        console.log(`🔎 Child order ${i + 1} — Note: ${childNote}`);
 
         const newOrderPayload = {
           order: {
@@ -237,24 +248,6 @@ console.log(`🔎 Child order ${i + 1} — Note: ${childNote}`);
         }
       } // closes inner loop
     }   // closes outer loop
-
-    // ✅ Tag parent order depending on split outcome
-    let newTags;
-    if (childOrdersCreated) {
-      newTags = order.tags ? `${order.tags}, Split-Processed` : "Split-Processed";
-    } else {
-      newTags = order.tags ? `${order.tags}, Truckload-Ready` : "Truckload-Ready";
-    }
-
-    await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders/${order.id}.json`, {
-      method: "PUT",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Shopify-Access-Token": ACCESS_TOKEN,
-      },
-      body: JSON.stringify({ order: { id: order.id, tags: newTags } }),
-    });
-
     // ✅ Parent project name metafield
     const projectNameFromNotes = Array.isArray(order.note_attributes)
       ? order.note_attributes.find(attr => attr.name === "Project Name")?.value || null
@@ -315,3 +308,4 @@ console.log(`🔎 Child order ${i + 1} — Note: ${childNote}`);
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });
+
