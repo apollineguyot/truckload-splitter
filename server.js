@@ -1,59 +1,37 @@
+// =========================
+// Section 1: Imports & Config
+// =========================
+
 import express from "express";
+import fetch from "node-fetch";
 
 const app = express();
 app.use(express.json());
 
-const PORT = process.env.PORT || 3000;
+// Environment variables
+const PORT = process.env.PORT || 10000;
 const SHOP = process.env.SHOP;
 const ACCESS_TOKEN = process.env.SHOPIFY_ACCESS_TOKEN;
 const API_VERSION = process.env.API_VERSION || "2023-10";
+const shopBaseUrl = `https://${SHOP}.myshopify.com`;
 
-if (!SHOP || !ACCESS_TOKEN) {
-  console.error("❌ Missing required env vars: SHOP or SHOPIFY_ACCESS_TOKEN");
+// =========================
+// Utility Functions
+// =========================
+
+// Normalize date string (hardened)
+function normalizeDate(dateStr) {
+  if (!dateStr) return null;
+  try {
+    const d = new Date(dateStr);
+    if (isNaN(d.getTime())) return null;
+    return d.toISOString().split("T")[0];
+  } catch {
+    return null;
+  }
 }
 
-const shopBaseUrl = `https://${SHOP}`;
-// ✅ Hardened date normalization
-function normalizeDate(input) {
-  if (!input || typeof input !== "string") return null;
-  if (/^\d{4}-\d{2}-\d{2}$/.test(input)) return input;
-  const parsed = new Date(input);
-  if (!isNaN(parsed.getTime())) return parsed.toISOString().slice(0, 10);
-  return null;
-}
-
-app.get("/", (_req, res) => {
-  res.status(200).send("OK");
-});
-
-// Helper: fetch parent pickup location
-async function getParentPickupLocation(orderId) {
-  const resp = await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders/${orderId}/fulfillment_orders.json`, {
-    method: "GET",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Shopify-Access-Token": ACCESS_TOKEN,
-    },
-  });
-
-  const data = await resp.json();
-  const assignedLocationId = data?.fulfillment_orders?.[0]?.assigned_location_id || null;
-  console.log(`📍 Parent assigned location: ${assignedLocationId}`);
-  return assignedLocationId;
-}
-
-// Helper: copy parent pickup date
-function getParentPickupDate(order) {
-  const pickupDateFromNotes = Array.isArray(order.note_attributes)
-    ? order.note_attributes.find(attr => attr.name === "Pickup Date")?.value || null
-    : null;
-  const pickupDateFallback = Array.isArray(order.line_items) && Array.isArray(order.line_items[0]?.properties)
-    ? order.line_items[0].properties.find(p => p.name === "Pickup Date")?.value || null
-    : null;
-  return normalizeDate(pickupDateFromNotes || pickupDateFallback);
-}
-
-// ✅ Helper: fetch latest parent order
+// Fetch parent order from Shopify
 async function getParentOrder(orderId) {
   const resp = await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders/${orderId}.json`, {
     method: "GET",
@@ -63,73 +41,89 @@ async function getParentOrder(orderId) {
     },
   });
   const data = await resp.json();
-  return data.order;
+  return data.order || {};
 }
+
+// Tag parent order with Split-Processed
+async function tagParentOrder(orderId, tag) {
+  const resp = await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders/${orderId}.json`, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Shopify-Access-Token": ACCESS_TOKEN,
+    },
+    body: JSON.stringify({
+      order: {
+        id: orderId,
+        tags: tag,
+      },
+    }),
+  });
+  return await resp.json();
+}
+
+// Extract pickup date from note attributes
+function getParentPickupDate(order) {
+  if (order?.note_attributes) {
+    const pickupAttr = order.note_attributes.find(attr => attr.name === "pickup_date");
+    if (pickupAttr) return normalizeDate(pickupAttr.value);
+  }
+  return null;
+}
+
+// Stub for pickup location (extend if needed)
+async function getParentPickupLocation(orderId) {
+  return null;
+}
+// =========================
+// Section 2: Webhook Handler Start
+// =========================
+
 app.post("/webhook", async (req, res) => {
-  const order = req.body;
+  try {
+    const order = req.body;
 
-  // 🚫 Guard: Skip if parent already processed
-  if ((order.tags || "").includes("Split-Processed")) {
-    console.log("↩️ Parent already marked as processed. Skipping split.");
-    return res.status(200).send("Already processed");
-  }
+    // 🚫 Guard: Skip if parent already processed
+    if ((order.tags || "").includes("Split-Processed")) {
+      console.log("↩️ Parent already marked as processed. Skipping split.");
+      return res.status(200).send("Already processed");
+    }
 
-  console.log(`🔔 Webhook fired for order ${order.id} at ${new Date().toISOString()}`);
+    console.log(`🔔 Webhook fired for order ${order.id} at ${new Date().toISOString()}`);
 
-  // 🚫 Skip child orders immediately
-  if ((order.tags || "").includes("Split-Child")) {
-    console.log("↩️ Child order detected. Skipping split.");
-    return res.status(200).send("Child order skipped");
-  }
+    // 🚫 Skip child orders immediately
+    if ((order.tags || "").includes("Split-Child")) {
+      console.log("↩️ Child order detected. Skipping split.");
+      return res.status(200).send("Child order skipped");
+    }
 
-  // ✅ Double‑check parent order tags from Shopify before splitting
-  const latestParent = await getParentOrder(order.id);
-  if ((latestParent.tags || "").includes("Split-Processed") || (latestParent.tags || "").includes("Truckload-Ready")) {
-    console.log("↩️ Parent already marked as processed. Skipping split.");
-    return res.status(200).send("Already processed");
-  }
+    // ✅ Double‑check parent order tags from Shopify before splitting
+    const latestParent = await getParentOrder(order.id);
+    if ((latestParent.tags || "").includes("Split-Processed") || (latestParent.tags || "").includes("Truckload-Ready")) {
+      console.log("↩️ Parent already marked as processed. Skipping split.");
+      return res.status(200).send("Already processed");
+    }
 
-  const lineItems = Array.isArray(order.line_items) ? order.line_items : [];
-  if (lineItems.length === 0) {
-    console.log("⚠️ No line items found on order");
-    return res.status(200).send("No line items");
-  }
-
-  // ✅ Fetch parent pickup context
-  const parentLocationId = await getParentPickupLocation(order.id);
-  const parentPickupDate = getParentPickupDate(order);
-
-  let childOrdersCreated = false;
-
-  // ✅ Outer loop over line items
-  for (const item of lineItems) {
-    if (!item?.product_id || !item?.variant_id) continue;
-
-    // ... truckload capacity lookup and split logic ...
-    // ... child order creation loop ...
-    childOrdersCreated = true;
-  }
-
-  // ✅ Tag parent after successful split
-  if (childOrdersCreated) {
-    await tagParentOrder(order.id, "Split-Processed");
-    console.log(`🏷️ Parent ${order.id} tagged as Split-Processed`);
-  }
-
-  return res.status(200).send("Split complete");
-});
-
+    const lineItems = Array.isArray(order.line_items) ? order.line_items : [];
+    if (lineItems.length === 0) {
+      console.log("⚠️ No line items found on order");
+      return res.status(200).send("No line items");
+    }
 
     // ✅ Fetch parent pickup context
     const parentLocationId = await getParentPickupLocation(order.id);
     const parentPickupDate = getParentPickupDate(order);
 
     let childOrdersCreated = false;
+// =========================
+// Section 3: Split Logic Loop
+// =========================
 
     // ✅ Outer loop over line items
     for (const item of lineItems) {
       if (!item?.product_id || !item?.variant_id) continue;
 
+      // 🔎 Fetch truckload capacity metafield for this product
       const metaResp = await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/products/${item.product_id}/metafields.json`, {
         method: "GET",
         headers: {
@@ -137,208 +131,111 @@ app.post("/webhook", async (req, res) => {
           "X-Shopify-Access-Token": ACCESS_TOKEN,
         },
       });
-
       const metaData = await metaResp.json();
+
       const truckloadMeta = Array.isArray(metaData?.metafields)
-        ? metaData.metafields.find(m => m.key === "truckload_capacity" && ["custom", "logistics"].includes(m.namespace))
+        ? metaData.metafields.find(m => m.namespace === "custom" && m.key === "truckload_capacity")
         : null;
 
-      const truckloadCapacity = parseInt(truckloadMeta?.value ?? "0", 10);
-      if (!Number.isFinite(truckloadCapacity) || truckloadCapacity <= 0 || item.quantity <= truckloadCapacity) continue;
+      const truckloadCapacity = truckloadMeta ? parseInt(truckloadMeta.value, 10) : null;
 
-      const fullLoads = Math.floor(item.quantity / truckloadCapacity);
-      const remainder = item.quantity % truckloadCapacity;
-      const splitQuantities = Array(fullLoads).fill(truckloadCapacity);
-      if (remainder > 0) splitQuantities.push(remainder);
+      if (!truckloadCapacity || truckloadCapacity <= 0) {
+        console.log(`⚠️ No valid truckload capacity for product ${item.product_id}`);
+        continue;
+      }
 
-      console.log(`Split quantities for ${item.title}:`, splitQuantities);
+      // 🔎 Split quantities based on truckload capacity
+      const splits = [];
+      let remaining = item.quantity;
+      while (remaining > 0) {
+        const qty = Math.min(truckloadCapacity, remaining);
+        splits.push(qty);
+        remaining -= qty;
+      }
+      console.log(`Split quantities for ${item.product_id} – ${item.title}:`, splits);
 
-      // ✅ Inner loop over split quantities
-      for (let i = 0; i < splitQuantities.length; i++) {
-        const qty = splitQuantities[i];
-
-        const projectName = Array.isArray(item.properties)
-          ? item.properties.find(p => p.name === "Project Name")?.value || null
-          : null;
-        const pickupDateRaw = Array.isArray(item.properties)
-          ? item.properties.find(p => p.name === "Pickup Date")?.value || null
-          : null;
-        const pickupDateNormalized = normalizeDate(pickupDateRaw);
-
-        // ✅ Only use order.note for warehouse instructions
-        const warehouseInstructions = order.note || null;
-
-        // Build childNote cleanly
-        let childNoteParts = [];
-        if (pickupDateNormalized) childNoteParts.push(`Pickup Date: ${pickupDateNormalized}`);
-        if (warehouseInstructions) childNoteParts.push(`Warehouse Instructions: ${warehouseInstructions}`);
-
-        const childNote = childNoteParts.join(" | ");
-
-        console.log(`🔎 Child order ${i + 1} — Note: ${childNote}`);
-
-        const newOrderPayload = {
+      // ✅ Create child orders for each split
+      for (let i = 0; i < splits.length; i++) {
+        const payload = {
           order: {
-            line_items: [{
-              variant_id: item.variant_id,
-              quantity: qty,
-              location_id: parentLocationId,
-            }],
-            customer: order.customer ?? undefined,
-            shipping_address: order.shipping_address ?? undefined,
-            billing_address: order.billing_address ?? undefined,
-            email: order.email ?? undefined,
-            note: childNote || null,
-            tags: [
-              `Split-Child`,
-              `Truckload ${i + 1}`,
-              `Parent-${order.name}`,
-              `Product-${item.product_id}`,
-              `LineItem-${item.id}`
+            line_items: [
+              {
+                variant_id: item.variant_id,
+                quantity: splits[i],
+                location_id: parentLocationId,
+              },
             ],
-            purchase_order_number: projectName,
-            metafields: [],
+            customer: order.customer,
+            billing_address: order.billing_address,
+            email: order.email,
+            note: order.note,
+            tags: [
+              "Split-Child",
+              `Truckload ${i + 1}`,
+              `Parent-#${order.order_number}`,
+              `Product-${item.product_id}`,
+              `LineItem-${item.id}`,
+            ],
+            purchase_order_number: order.purchase_order_number,
+            metafields: [
+              // ✅ Attach pickup date and project name if available
+              ...(parentPickupDate ? [{
+                namespace: "custom",
+                key: "pickup_date",
+                type: "single_line_text_field",
+                value: parentPickupDate,
+              }] : []),
+              ...(order.project_name ? [{
+                namespace: "custom",
+                key: "project_name",
+                type: "single_line_text_field",
+                value: order.project_name,
+              }] : []),
+            ],
             fulfillment_status: "unfulfilled",
           },
         };
 
-        console.log("🧾 Creating child order payload:", JSON.stringify(newOrderPayload, null, 2));
+        console.log(`🧾 Creating child order payload:`, JSON.stringify(payload, null, 2));
 
-        const createResp = await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders.json`, {
+        const resp = await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders.json`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
             "X-Shopify-Access-Token": ACCESS_TOKEN,
           },
-          body: JSON.stringify(newOrderPayload),
+          body: JSON.stringify(payload),
         });
 
-        const createdOrder = await createResp.json();
-        if (!createResp.ok || !createdOrder.order?.id) continue;
+        const childData = await resp.json();
+        console.log(`✅ Created child order ${childData.order?.id} with tags: ${payload.order.tags.join(", ")}`);
 
-        console.log(`✅ Created child order ${createdOrder.order.id} with tags: ${createdOrder.order.tags}`);
         childOrdersCreated = true;
+      }
+    }
 
-        // Attach project name metafield
-        if (projectName) {
-          await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/metafields.json`, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "X-Shopify-Access-Token": ACCESS_TOKEN,
-            },
-            body: JSON.stringify({
-              metafield: {
-                namespace: "custom",
-                key: "project_name",
-                type: "single_line_text_field",
-                value: projectName,
-                owner_id: createdOrder.order.id,
-                owner_resource: "order",
-              },
-            }),
-          });
-        }
-
-        // Attach pickup date metafield
-        const effectivePickupDate = pickupDateNormalized || parentPickupDate;
-        if (effectivePickupDate) {
-          await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/metafields.json`, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "X-Shopify-Access-Token": ACCESS_TOKEN,
-            },
-            body: JSON.stringify({
-              metafield: {
-                namespace: "custom",
-                key: "pickup_date",
-                type: "date",
-                value: effectivePickupDate,
-                owner_id: createdOrder.order.id,
-                owner_resource: "order",
-              },
-            }),
-          });
-        }
-      } // closes inner loop
-    }   // closes outer loop
-
-    // ✅ Tag parent order depending on split outcome
-    let newTags;
+    // ✅ Tag parent after successful split
     if (childOrdersCreated) {
-      newTags = order.tags ? `${order.tags}, Split-Processed` : "Split-Processed";
-    } else {
-      newTags = order.tags ? `${order.tags}, Truckload-Ready` : "Truckload-Ready";
+      await tagParentOrder(order.id, `${order.tags},Split-Processed`);
+      console.log(`🏷️ Parent ${order.id} tagged as Split-Processed`);
     }
 
-    await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders/${order.id}.json`, {
-      method: "PUT",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Shopify-Access-Token": ACCESS_TOKEN,
-      },
-      body: JSON.stringify({ order: { id: order.id, tags: newTags } }),
-    });
-
-    // ✅ Parent project name metafield
-    const projectNameFromNotes = Array.isArray(order.note_attributes)
-      ? order.note_attributes.find(attr => attr.name === "Project Name")?.value || null
-      : null;
-    const projectNameFallback = Array.isArray(order.line_items) && Array.isArray(order.line_items[0]?.properties)
-      ? order.line_items[0].properties.find(p => p.name === "Project Name")?.value || null
-      : null;
-    const parentProjectName = projectNameFromNotes || projectNameFallback;
-
-    if (parentProjectName) {
-      await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/metafields.json`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Shopify-Access-Token": ACCESS_TOKEN,
-        },
-        body: JSON.stringify({
-          metafield: {
-            namespace: "custom",
-            key: "project_name",
-            type: "single_line_text_field",
-            value: parentProjectName,
-            owner_id: order.id,
-            owner_resource: "order",
-          },
-        }),
-      });
-    }
-
-    // ✅ Parent pickup date metafield
-    if (parentPickupDate) {
-      await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/metafields.json`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Shopify-Access-Token": ACCESS_TOKEN,
-        },
-        body: JSON.stringify({
-          metafield: {
-            namespace: "custom",
-            key: "pickup_date",
-            type: "date",
-            value: parentPickupDate,
-            owner_id: order.id,
-            owner_resource: "order",
-          },
-        }),
-      });
-    }
-
-    res.status(200).send("Split processed");
+    return res.status(200).send("Split complete");
   } catch (err) {
-    console.error("❌ Error processing split:", err);
-    res.status(500).send("Error");
+    console.error("❌ Error in webhook handler:", err);
+    return res.status(500).send("Internal error");
   }
 });
+// =========================
+// Section 4: Health Check + Startup
+// =========================
 
+// ✅ Health check route
+app.get("/health", (req, res) => {
+  res.status(200).send("OK");
+});
+
+// ✅ Start server
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });
-
