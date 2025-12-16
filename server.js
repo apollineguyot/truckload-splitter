@@ -65,29 +65,60 @@ async function getParentOrder(orderId) {
   const data = await resp.json();
   return data.order;
 }
-app.post("/webhooks/orders/create", async (req, res) => {
-  try {
-    const order = req.body;
-    console.log(`🔔 Webhook fired for order ${order.id} at ${new Date().toISOString()}`);
+app.post("/webhook", async (req, res) => {
+  const order = req.body;
 
-    // 🚫 Skip child orders immediately
-    if ((order.tags || "").includes("Split-Child")) {
-      console.log("↩️ Child order detected. Skipping split.");
-      return res.status(200).send("Child order skipped");
-    }
+  // 🚫 Guard: Skip if parent already processed
+  if ((order.tags || "").includes("Split-Processed")) {
+    console.log("↩️ Parent already marked as processed. Skipping split.");
+    return res.status(200).send("Already processed");
+  }
 
-    // ✅ Double‑check parent order tags from Shopify before splitting
-    const latestParent = await getParentOrder(order.id);
-    if ((latestParent.tags || "").includes("Split-Processed") || (latestParent.tags || "").includes("Truckload-Ready")) {
-      console.log("↩️ Parent already marked as processed. Skipping split.");
-      return res.status(200).send("Already processed");
-    }
+  console.log(`🔔 Webhook fired for order ${order.id} at ${new Date().toISOString()}`);
 
-    const lineItems = Array.isArray(order.line_items) ? order.line_items : [];
-    if (lineItems.length === 0) {
-      console.log("⚠️ No line items found on order");
-      return res.status(200).send("No line items");
-    }
+  // 🚫 Skip child orders immediately
+  if ((order.tags || "").includes("Split-Child")) {
+    console.log("↩️ Child order detected. Skipping split.");
+    return res.status(200).send("Child order skipped");
+  }
+
+  // ✅ Double‑check parent order tags from Shopify before splitting
+  const latestParent = await getParentOrder(order.id);
+  if ((latestParent.tags || "").includes("Split-Processed") || (latestParent.tags || "").includes("Truckload-Ready")) {
+    console.log("↩️ Parent already marked as processed. Skipping split.");
+    return res.status(200).send("Already processed");
+  }
+
+  const lineItems = Array.isArray(order.line_items) ? order.line_items : [];
+  if (lineItems.length === 0) {
+    console.log("⚠️ No line items found on order");
+    return res.status(200).send("No line items");
+  }
+
+  // ✅ Fetch parent pickup context
+  const parentLocationId = await getParentPickupLocation(order.id);
+  const parentPickupDate = getParentPickupDate(order);
+
+  let childOrdersCreated = false;
+
+  // ✅ Outer loop over line items
+  for (const item of lineItems) {
+    if (!item?.product_id || !item?.variant_id) continue;
+
+    // ... truckload capacity lookup and split logic ...
+    // ... child order creation loop ...
+    childOrdersCreated = true;
+  }
+
+  // ✅ Tag parent after successful split
+  if (childOrdersCreated) {
+    await tagParentOrder(order.id, "Split-Processed");
+    console.log(`🏷️ Parent ${order.id} tagged as Split-Processed`);
+  }
+
+  return res.status(200).send("Split complete");
+});
+
 
     // ✅ Fetch parent pickup context
     const parentLocationId = await getParentPickupLocation(order.id);
