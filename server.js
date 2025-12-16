@@ -78,51 +78,53 @@ async function getParentPickupLocation(orderId) {
 // Section 2: Webhook Handler Start
 // =========================
 
+// Unified webhook route
 app.post("/webhook", async (req, res) => {
   try {
-    const order = req.body;
+    const topic = req.get("X-Shopify-Topic"); // Shopify tells you which event fired
+    const order = req.body; // Shopify sends the order payload
 
-    // 🚫 Guard: Skip if parent already processed
-    if ((order.tags || "").includes("Split-Processed")) {
-      console.log("↩️ Parent already marked as processed. Skipping split.");
-      return res.status(200).send("Already processed");
+    console.log(`🔔 Webhook fired for topic: ${topic}, order ${order.id}`);
+
+    if (topic === "orders/create") {
+      await runSplitLogic(order);
+    } else if (topic === "orders/paid") {
+      await runSplitLogic(order);
+    } else {
+      console.log(`ℹ️ Ignored webhook topic: ${topic}`);
     }
 
-    console.log(`🔔 Webhook fired for order ${order.id} at ${new Date().toISOString()}`);
+    res.status(200).send("Webhook processed");
+  } catch (err) {
+    console.error("❌ Error in unified webhook handler:", err);
+    res.status(500).send("Internal error");
+  }
+});
 
-    // 🚫 Skip child orders immediately
-    if ((order.tags || "").includes("Split-Child")) {
-      console.log("↩️ Child order detected. Skipping split.");
-      return res.status(200).send("Child order skipped");
+// =========================
+// Split Logic Function
+// =========================
+async function runSplitLogic(order) {
+  try {
+    console.log(`📦 Running split logic for order ${order.id}`);
+
+    // ✅ Guard clauses
+    if (order.tags?.includes("Split-Processed")) {
+      console.log(`↩️ Parent already marked as processed. Skipping split.`);
+      return;
     }
-
-    // ✅ Double‑check parent order tags from Shopify before splitting
-    const latestParent = await getParentOrder(order.id);
-    if ((latestParent.tags || "").includes("Split-Processed") || (latestParent.tags || "").includes("Truckload-Ready")) {
-      console.log("↩️ Parent already marked as processed. Skipping split.");
-      return res.status(200).send("Already processed");
+    if (order.tags?.includes("Split-Child")) {
+      console.log(`↩️ Child order detected. Skipping split.`);
+      return;
     }
-
-    const lineItems = Array.isArray(order.line_items) ? order.line_items : [];
-    if (lineItems.length === 0) {
-      console.log("⚠️ No line items found on order");
-      return res.status(200).send("No line items");
-    }
-
-    // ✅ Fetch parent pickup context
-    const parentLocationId = await getParentPickupLocation(order.id);
-    const parentPickupDate = getParentPickupDate(order);
 
     let childOrdersCreated = false;
-// =========================
-// Section 3: Split Logic Loop
-// =========================
 
     // ✅ Outer loop over line items
-    for (const item of lineItems) {
+    for (const item of order.line_items) {
       if (!item?.product_id || !item?.variant_id) continue;
 
-      // 🔎 Fetch truckload capacity metafield for this product
+      // 🔎 Fetch truckload capacity metafield
       const metaResp = await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/products/${item.product_id}/metafields.json`, {
         method: "GET",
         headers: {
@@ -143,7 +145,7 @@ app.post("/webhook", async (req, res) => {
         continue;
       }
 
-      // 🔎 Split quantities based on truckload capacity
+      // 🔎 Split quantities
       const splits = [];
       let remaining = item.quantity;
       while (remaining > 0) {
@@ -153,7 +155,7 @@ app.post("/webhook", async (req, res) => {
       }
       console.log(`Split quantities for ${item.product_id} – ${item.title}:`, splits);
 
-      // ✅ Create child orders for each split
+      // ✅ Create child orders
       for (let i = 0; i < splits.length; i++) {
         const payload = {
           order: {
@@ -161,7 +163,7 @@ app.post("/webhook", async (req, res) => {
               {
                 variant_id: item.variant_id,
                 quantity: splits[i],
-                location_id: parentLocationId,
+                location_id: order.location_id,
               },
             ],
             customer: order.customer,
@@ -177,12 +179,11 @@ app.post("/webhook", async (req, res) => {
             ],
             purchase_order_number: order.purchase_order_number,
             metafields: [
-              // ✅ Attach pickup date and project name if available
-              ...(parentPickupDate ? [{
+              ...(order.pickup_date ? [{
                 namespace: "custom",
                 key: "pickup_date",
                 type: "single_line_text_field",
-                value: parentPickupDate,
+                value: order.pickup_date,
               }] : []),
               ...(order.project_name ? [{
                 namespace: "custom",
@@ -218,13 +219,11 @@ app.post("/webhook", async (req, res) => {
       await tagParentOrder(order.id, `${order.tags},Split-Processed`);
       console.log(`🏷️ Parent ${order.id} tagged as Split-Processed`);
     }
-
-    return res.status(200).send("Split complete");
   } catch (err) {
-    console.error("❌ Error in webhook handler:", err);
-    return res.status(500).send("Internal error");
+    console.error("❌ Error in runSplitLogic:", err);
   }
-});
+}
+
 // =========================
 // Section 4: Health Check + Startup
 // =========================
