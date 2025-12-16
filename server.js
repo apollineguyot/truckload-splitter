@@ -13,6 +13,8 @@ const SHOP = process.env.SHOP;
 const ACCESS_TOKEN = process.env.SHOPIFY_ACCESS_TOKEN;
 const API_VERSION = process.env.API_VERSION || "2023-10";
 const shopBaseUrl = `https://${SHOP}`;
+console.log("Startup env:", { SHOP, API_VERSION, shopBaseUrl });
+
 
 // =========================
 // Utility Functions
