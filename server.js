@@ -122,26 +122,29 @@ app.post("/webhooks/orders/create", async (req, res) => {
 
       console.log(`Split quantities for ${item.title}:`, splitQuantities);
 
-const projectName = Array.isArray(item.properties)
-  ? item.properties.find(p => p.name === "Project Name")?.value || null
-  : null;
-const pickupDateRaw = Array.isArray(item.properties)
-  ? item.properties.find(p => p.name === "Pickup Date")?.value || null
-  : null;
-const pickupDateNormalized = normalizeDate(pickupDateRaw);
+      // ✅ Inner loop over split quantities
+      for (let i = 0; i < splitQuantities.length; i++) {
+        const qty = splitQuantities[i];
 
-// ✅ Only use order.note for warehouse instructions
-const warehouseInstructions = order.note || null;
+        const projectName = Array.isArray(item.properties)
+          ? item.properties.find(p => p.name === "Project Name")?.value || null
+          : null;
+        const pickupDateRaw = Array.isArray(item.properties)
+          ? item.properties.find(p => p.name === "Pickup Date")?.value || null
+          : null;
+        const pickupDateNormalized = normalizeDate(pickupDateRaw);
 
-// Build childNote cleanly
-let childNoteParts = [];
-if (pickupDateNormalized) childNoteParts.push(`Pickup Date: ${pickupDateNormalized}`);
-if (warehouseInstructions) childNoteParts.push(`Warehouse Instructions: ${warehouseInstructions}`);
+        // ✅ Only use order.note for warehouse instructions
+        const warehouseInstructions = order.note || null;
 
-const childNote = childNoteParts.join(" | ");
+        // Build childNote cleanly
+        let childNoteParts = [];
+        if (pickupDateNormalized) childNoteParts.push(`Pickup Date: ${pickupDateNormalized}`);
+        if (warehouseInstructions) childNoteParts.push(`Warehouse Instructions: ${warehouseInstructions}`);
 
-console.log(`🔎 Child order ${i + 1} — Note: ${childNote}`);
+        const childNote = childNoteParts.join(" | ");
 
+        console.log(`🔎 Child order ${i + 1} — Note: ${childNote}`);
 
         const newOrderPayload = {
           order: {
@@ -227,8 +230,8 @@ console.log(`🔎 Child order ${i + 1} — Note: ${childNote}`);
             }),
           });
         }
-      }
-    }
+      } // closes inner loop
+    }   // closes outer loop
 
     // ✅ Tag parent order depending on split outcome
     let newTags;
@@ -303,6 +306,7 @@ console.log(`🔎 Child order ${i + 1} — Note: ${childNote}`);
     res.status(500).send("Error");
   }
 });
+
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });
