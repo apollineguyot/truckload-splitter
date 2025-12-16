@@ -12,7 +12,7 @@ const PORT = process.env.PORT || 10000;
 const SHOP = process.env.SHOP;
 const ACCESS_TOKEN = process.env.SHOPIFY_ACCESS_TOKEN;
 const API_VERSION = process.env.API_VERSION || "2023-10";
-const shopBaseUrl = `https://${SHOP}.myshopify.com`;
+const shopBaseUrl = `https://${SHOP}`;
 
 // =========================
 // Utility Functions
