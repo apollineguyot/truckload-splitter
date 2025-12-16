@@ -88,13 +88,11 @@ app.post("/webhook", async (req, res) => {
 
     console.log(`🔔 Webhook fired for topic: ${topic}, order ${order.id}`);
 
-    if (topic === "orders/create") {
-      await runSplitLogic(order);
-    } else if (topic === "orders/paid") {
-      await runSplitLogic(order);
-    } else {
-      console.log(`ℹ️ Ignored webhook topic: ${topic}`);
-    }
+  if (topic === "orders/create") {
+  await runSplitLogic(order);
+} else {
+  console.log(`ℹ️ Ignored webhook topic: ${topic}`);
+}
 
     res.status(200).send("Webhook processed");
   } catch (err) {
