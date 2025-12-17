@@ -184,21 +184,26 @@ app.post("/webhooks/orders/create", async (req, res) => {
           ? item.properties.find(p => p.name === "Pickup Date")?.value || null
           : null;
         const pickupDateNormalized = normalizeDate(pickupDateRaw);
+// Extract warehouse instructions cleanly from parent note
+let warehouseInstructions = null;
+if (order.note) {
+  warehouseInstructions = order.note.replace(/Pickup Date:[^|]+(\|)?/, "").trim();
+  if (warehouseInstructions === "") warehouseInstructions = null;
 
-        // Extract warehouse instructions cleanly from parent note
-        let warehouseInstructions = null;
-        if (order.note) {
-          warehouseInstructions = order.note.replace(/Pickup Date:[^|]+(\|)?/, "").trim();
-          if (warehouseInstructions === "") warehouseInstructions = null;
-        }
+  // 🚩 Fix (Diff #22): remove duplicate "Warehouse Instructions:" if already present
+  if (warehouseInstructions && warehouseInstructions.startsWith("Warehouse Instructions:")) {
+    warehouseInstructions = warehouseInstructions.replace(/^Warehouse Instructions:\s*/, "");
+  }
+}
 
-        // Build childNote cleanly
-        let childNoteParts = [];
-        if (pickupDateNormalized) childNoteParts.push(`Pickup Date: ${pickupDateNormalized}`);
-        if (warehouseInstructions) childNoteParts.push(`Warehouse Instructions: ${warehouseInstructions}`);
+// Build childNote cleanly
+let childNoteParts = [];
+if (pickupDateNormalized) childNoteParts.push(`Pickup Date: ${pickupDateNormalized}`);
+if (warehouseInstructions) childNoteParts.push(`Warehouse Instructions: ${warehouseInstructions}`);
 
-        const childNote = childNoteParts.join(" | ");
-        console.log(`🔎 Child order ${i + 1} — Note: ${childNote}`);
+const childNote = childNoteParts.join(" | ");
+console.log(`🔎 Child order ${i + 1} — Note: ${childNote}`);
+
 
         const newOrderPayload = {
           order: {
