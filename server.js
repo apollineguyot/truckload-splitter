@@ -107,7 +107,10 @@ app.post("/webhooks/orders/create", async (req, res) => {
     const parentPickupDate = getParentPickupDate(order);
 
     let childOrdersCreated = false;
-    // ✅ Outer loop over line items
+
+        // ✅ Outer loop over line items
+    const multipleProducts = lineItems.length > 1;
+
     for (const item of lineItems) {
       if (!item?.product_id || !item?.variant_id) continue;
 
@@ -125,12 +128,48 @@ app.post("/webhooks/orders/create", async (req, res) => {
         : null;
 
       const truckloadCapacity = parseInt(truckloadMeta?.value ?? "0", 10);
-      if (!Number.isFinite(truckloadCapacity) || truckloadCapacity <= 0 || item.quantity <= truckloadCapacity) continue;
+      let splitQuantities = [];
 
-      const fullLoads = Math.floor(item.quantity / truckloadCapacity);
-      const remainder = item.quantity % truckloadCapacity;
-      const splitQuantities = Array(fullLoads).fill(truckloadCapacity);
-      if (remainder > 0) splitQuantities.push(remainder);
+      console.log(`🔍 Checking item ${item.title} (qty ${item.quantity}) with truckloadCapacity=${truckloadCapacity}`);
+
+      if (!Number.isFinite(truckloadCapacity) || truckloadCapacity <= 0) {
+        console.log(`⚠️ Skipping ${item.title} — invalid truckloadCapacity`);
+        continue;
+      }
+
+      // Case: quantity less than capacity → always skip
+      if (item.quantity < truckloadCapacity) {
+        console.log(`↩️ Skipping ${item.title} — qty ${item.quantity} < capacity ${truckloadCapacity}`);
+        continue;
+      }
+
+      // Case: quantity equals capacity
+      if (item.quantity === truckloadCapacity) {
+        if (multipleProducts) {
+          console.log(`✅ Equal capacity for ${item.title}, creating one child order since parent has multiple products`);
+          splitQuantities = [item.quantity];
+        } else {
+          console.log(`🏷️ Parent-only product ${item.title} at capacity, tagging parent as Truckload-Ready`);
+          const newTags = order.tags ? `${order.tags}, Truckload-Ready` : "Truckload-Ready";
+          await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders/${order.id}.json`, {
+            method: "PUT",
+            headers: {
+              "Content-Type": "application/json",
+              "X-Shopify-Access-Token": ACCESS_TOKEN,
+            },
+            body: JSON.stringify({ order: { id: order.id, tags: newTags } }),
+          });
+          continue; // no child orders created
+        }
+      }
+
+      // Case: quantity greater than capacity → normal split
+      if (item.quantity > truckloadCapacity) {
+        const fullLoads = Math.floor(item.quantity / truckloadCapacity);
+        const remainder = item.quantity % truckloadCapacity;
+        splitQuantities = Array(fullLoads).fill(truckloadCapacity);
+        if (remainder > 0) splitQuantities.push(remainder);
+      }
 
       console.log(`Split quantities for ${item.title}:`, splitQuantities);
 
@@ -149,7 +188,6 @@ app.post("/webhooks/orders/create", async (req, res) => {
         // Extract warehouse instructions cleanly from parent note
         let warehouseInstructions = null;
         if (order.note) {
-          // Strip out any pickup date text if present
           warehouseInstructions = order.note.replace(/Pickup Date:[^|]+(\|)?/, "").trim();
           if (warehouseInstructions === "") warehouseInstructions = null;
         }
@@ -224,6 +262,32 @@ app.post("/webhooks/orders/create", async (req, res) => {
             }),
           });
         }
+
+        // Attach pickup date metafield
+        const effectivePickupDate = pickupDateNormalized || parentPickupDate;
+        if (effectivePickupDate) {
+          await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/metafields.json`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-Shopify-Access-Token": ACCESS_TOKEN,
+            },
+            body: JSON.stringify({
+              metafield: {
+                namespace: "custom",
+                key: "pickup_date",
+                type: "date",
+                value: effectivePickupDate,
+                owner_id: createdOrder.order.id,
+                owner_resource: "order",
+              },
+            }),
+          });
+        }
+      } // closes inner loop
+    }   // closes outer loop
+
+
 
         // Attach pickup date metafield
         const effectivePickupDate = pickupDateNormalized || parentPickupDate;
