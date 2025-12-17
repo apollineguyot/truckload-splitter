@@ -287,31 +287,6 @@ app.post("/webhooks/orders/create", async (req, res) => {
       } // closes inner loop
     }   // closes outer loop
 
-
-
-        // Attach pickup date metafield
-        const effectivePickupDate = pickupDateNormalized || parentPickupDate;
-        if (effectivePickupDate) {
-          await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/metafields.json`, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "X-Shopify-Access-Token": ACCESS_TOKEN,
-            },
-            body: JSON.stringify({
-              metafield: {
-                namespace: "custom",
-                key: "pickup_date",
-                type: "date",
-                value: effectivePickupDate,
-                owner_id: createdOrder.order.id,
-                owner_resource: "order",
-              },
-            }),
-          });
-        }
-      } // closes inner loop
-    }   // closes outer loop
     // ✅ Parent project name metafield
     const projectNameFromNotes = Array.isArray(order.note_attributes)
       ? order.note_attributes.find(attr => attr.name === "Project Name")?.value || null
@@ -360,6 +335,21 @@ app.post("/webhooks/orders/create", async (req, res) => {
           },
         }),
       });
+    }
+
+    // ✅ Final parent tagging logic
+    if (!childOrdersCreated) {
+      // If no child orders were created, parent should be tagged Truckload-Ready
+      const newTags = order.tags ? `${order.tags}, Truckload-Ready` : "Truckload-Ready";
+      await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders/${order.id}.json`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Shopify-Access-Token": ACCESS_TOKEN,
+        },
+        body: JSON.stringify({ order: { id: order.id, tags: newTags } }),
+      });
+      console.log(`🏷️ Parent ${order.name} tagged as Truckload-Ready (no child orders created)`);
     }
 
     res.status(200).send("Split processed");
