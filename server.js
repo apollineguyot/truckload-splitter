@@ -74,7 +74,7 @@ app.post("/webhooks/orders/create", async (req, res) => {
     console.log(`🛑 Duplicate webhook — parent ${order.name} already processed`);
     return res.status(200).send("Duplicate webhook ignored");
   }
-
+try {
   // From here down, everything works exactly the same as before
   console.log(`🔔 Webhook fired for order ${order.id} at ${new Date().toISOString()}`);
 
