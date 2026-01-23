@@ -67,16 +67,15 @@ async function getParentOrder(orderId) {
   return data.order;
 }
 app.post("/webhooks/orders/create", async (req, res) => {
-  const order = req.body;
+  try {
+    const order = req.body;
+    console.log(`🔔 Webhook fired for order ${order.id} at ${new Date().toISOString()}`);
 
-  // 🚫 EARLY EXIT — prevents duplicate child orders
-  if ((order.tags || "").includes("Split-Processed")) {
-    console.log(`🛑 Duplicate webhook — parent ${order.name} already processed`);
-    return res.status(200).send("Duplicate webhook ignored");
-  }
-try {
-  // From here down, everything works exactly the same as before
-  console.log(`🔔 Webhook fired for order ${order.id} at ${new Date().toISOString()}`);
+    // 🚫 Skip child orders immediately
+    if ((order.tags || "").includes("Split-Child")) {
+      console.log("↩️ Child order detected. Skipping split.");
+      return res.status(200).send("Child order skipped");
+    }
 
     // ✅ Double‑check parent order tags from Shopify before splitting
     const latestParent = await getParentOrder(order.id);
