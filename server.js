@@ -259,11 +259,12 @@ function trackExpectedChild({
         continue;
       }
 
-      // Case: quantity less than capacity → always skip
-      if (item.quantity < truckloadCapacity) {
-        console.log(`↩️ Skipping ${item.title} — qty ${item.quantity} < capacity ${truckloadCapacity}`);
-        continue;
-      }
+// Case: quantity less than capacity → still create one child order
+if (item.quantity < truckloadCapacity) {
+  console.log(`📦 Qty ${item.quantity} < capacity ${truckloadCapacity} — creating one child order`);
+  splitQuantities = [item.quantity];
+}
+
 
       // Case: quantity equals capacity
       if (item.quantity === truckloadCapacity) {
