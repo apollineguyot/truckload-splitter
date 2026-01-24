@@ -169,6 +169,7 @@ let expectedChildren = [];
 
 // Helper to record what we *intend* to create
 function trackExpectedChild({
+  childId,          // ⭐ NEW
   variantId,
   quantity,
   parentOrderName,
@@ -180,6 +181,7 @@ function trackExpectedChild({
   pickupDate
 }) {
   expectedChildren.push({
+    childId,        // ⭐ NEW
     variantId,
     quantity,
     parentOrderName,
@@ -191,6 +193,7 @@ function trackExpectedChild({
     pickupDate
   });
 }
+
 
 
     // 🚫 Skip child orders immediately
@@ -415,6 +418,7 @@ console.log(`🔎 Child order ${i + 1} — Note: ${childNote}`);
 
 // Track expected child order for verification
 trackExpectedChild({
+  childId: createdOrder.order.id,   // ⭐ NEW
   variantId: item.variant_id,
   quantity: qty,
   parentOrderName: order.name,
@@ -425,6 +429,7 @@ trackExpectedChild({
   projectName: projectName || null,
   pickupDate: pickupDateNormalized || parentPickupDate || null
 });
+
 
         
       } // closes inner loop
@@ -491,6 +496,7 @@ async function verifyChildOrders(expectedChildren) {
 
   for (const expected of expectedChildren) {
     const {
+      childId,          // ⭐ REQUIRED
       variantId,
       quantity,
       parentOrderName,
@@ -502,9 +508,9 @@ async function verifyChildOrders(expectedChildren) {
       pickupDate
     } = expected;
 
-    // Fetch all child orders that match the parent tag
-    const searchResp = await fetch(
-      `${shopBaseUrl}/admin/api/${API_VERSION}/orders.json?status=any&tag=Parent-${parentOrderName}`,
+    // ⭐ Fetch child order directly by ID
+    const childResp = await fetch(
+      `${shopBaseUrl}/admin/api/${API_VERSION}/orders/${childId}.json`,
       {
         method: "GET",
         headers: {
@@ -514,36 +520,29 @@ async function verifyChildOrders(expectedChildren) {
       }
     );
 
-    const searchData = await searchResp.json();
-    const matchingChildren = Array.isArray(searchData?.orders) ? searchData.orders : [];
-
-    // Find the specific child order for this expected entry
-    const child = matchingChildren.find(o =>
-      o.tags.includes(`Product-${productId}`) &&
-      o.tags.includes(`LineItem-${lineItemId}`) &&
-      o.tags.includes(`Truckload ${truckloadIndex + 1}`)
-    );
+    const childData = await childResp.json();
+    const child = childData.order;
 
     if (!child) {
-      console.error(`❌ Missing child order for Product-${productId}, LineItem-${lineItemId}, Truckload ${truckloadIndex + 1}`);
+      console.error(`❌ Child order ${childId} not found`);
       allVerified = false;
       continue;
     }
 
-    // Verify quantity
+    // ⭐ Verify quantity
     const actualQty = child.line_items?.[0]?.quantity;
     if (actualQty !== quantity) {
-      console.error(`❌ Quantity mismatch for child ${child.id}: expected ${quantity}, got ${actualQty}`);
+      console.error(`❌ Quantity mismatch for child ${childId}: expected ${quantity}, got ${actualQty}`);
       allVerified = false;
     }
 
-    // Verify note
+    // ⭐ Verify note
     if (note && child.note !== note) {
-      console.error(`❌ Note mismatch for child ${child.id}: expected "${note}", got "${child.note}"`);
+      console.error(`❌ Note mismatch for child ${childId}: expected "${note}", got "${child.note}"`);
       allVerified = false;
     }
 
-    // Verify tags
+    // ⭐ Verify tags
     const requiredTags = [
       "Split-Child",
       `Parent-${parentOrderName}`,
@@ -554,14 +553,14 @@ async function verifyChildOrders(expectedChildren) {
 
     for (const tag of requiredTags) {
       if (!child.tags.includes(tag)) {
-        console.error(`❌ Missing tag "${tag}" on child ${child.id}`);
+        console.error(`❌ Missing tag "${tag}" on child ${childId}`);
         allVerified = false;
       }
     }
 
-    // Verify metafields
+    // ⭐ Verify metafields
     const metaResp = await fetch(
-      `${shopBaseUrl}/admin/api/${API_VERSION}/orders/${child.id}/metafields.json`,
+      `${shopBaseUrl}/admin/api/${API_VERSION}/orders/${childId}/metafields.json`,
       {
         method: "GET",
         headers: {
@@ -578,12 +577,12 @@ async function verifyChildOrders(expectedChildren) {
     const pickupMeta = metaList.find(m => m.namespace === "custom" && m.key === "pickup_date");
 
     if (projectName && (!projectMeta || projectMeta.value !== projectName)) {
-      console.error(`❌ Project name metafield mismatch on child ${child.id}`);
+      console.error(`❌ Project name metafield mismatch on child ${childId}`);
       allVerified = false;
     }
 
     if (pickupDate && (!pickupMeta || pickupMeta.value !== pickupDate)) {
-      console.error(`❌ Pickup date metafield mismatch on child ${child.id}`);
+      console.error(`❌ Pickup date metafield mismatch on child ${childId}`);
       allVerified = false;
     }
   }
@@ -591,6 +590,7 @@ async function verifyChildOrders(expectedChildren) {
   console.log(allVerified ? "✅ Verification passed" : "❌ Verification failed");
   return allVerified;
 }
+
 
     // Run verification pass
 const verificationPassed = await verifyChildOrders(expectedChildren);
