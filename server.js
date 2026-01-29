@@ -148,8 +148,9 @@ async function assertLockAvailable(orderId) {
 }
 
 app.post("/webhooks/orders/create", async (req, res) => {
+  const order = req.body;   // ⭐ now visible to try/catch/finally
+
   try {
-    const order = req.body;
     console.log(`🔔 Webhook fired for order ${order.id} at ${new Date().toISOString()}`);
 
     // ============================================================
