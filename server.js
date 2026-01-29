@@ -8,6 +8,13 @@ const SHOP = process.env.SHOP;
 const ACCESS_TOKEN = process.env.SHOPIFY_ACCESS_TOKEN;
 const API_VERSION = process.env.API_VERSION || "2023-10";
 
+
+// ============================================================
+// 🧠 Local In-Memory Lock (Prevents Race Conditions)
+// ============================================================
+const localLocks = new Map();
+
+
 if (!SHOP || !ACCESS_TOKEN) {
   console.error("❌ Missing required env vars: SHOP or SHOPIFY_ACCESS_TOKEN");
 }
@@ -144,6 +151,19 @@ app.post("/webhooks/orders/create", async (req, res) => {
   try {
     const order = req.body;
     console.log(`🔔 Webhook fired for order ${order.id} at ${new Date().toISOString()}`);
+
+    // ============================================================
+// 🧠 Local Lock Guard — prevents simultaneous webhook execution
+// ============================================================
+if (localLocks.get(order.id)) {
+  console.log(`⛔ Local lock active for ${order.id}. Skipping.`);
+  return res.status(200).send("Local lock skip");
+}
+
+// Activate local lock
+localLocks.set(order.id, true);
+console.log(`🔒 Local lock engaged for ${order.id}`);
+
 
     // ============================================================
 // 🔒 Duplicate Webhook Guard + Initial Lock Write
@@ -622,12 +642,23 @@ if (verificationPassed) {
       console.log(`🏷️ Parent ${order.name} tagged as Truckload-Ready (no child orders created)`);
     }
 
-    res.status(200).send("Split processed");
-  } catch (err) {
-    console.error("❌ Error processing split:", err);
-    res.status(500).send("Error");
+res.status(200).send("Split processed");
+
+} catch (err) {
+  console.error("❌ Error processing split:", err);
+  res.status(500).send("Error");
+
+} finally {
+  // ============================================================
+  // 🧠 ALWAYS Release Local Lock
+  // ============================================================
+  if (order?.id && localLocks.get(order.id)) {
+    localLocks.delete(order.id);
+    console.log(`🔓 Local lock released for ${order.id}`);
   }
+}
 });
+
 
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
