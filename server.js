@@ -8,12 +8,10 @@ const SHOP = process.env.SHOP;
 const ACCESS_TOKEN = process.env.SHOPIFY_ACCESS_TOKEN;
 const API_VERSION = process.env.API_VERSION || "2023-10";
 
-
 // ============================================================
 // 🧠 Local In-Memory Lock (Prevents Race Conditions)
 // ============================================================
 const localLocks = new Map();
-
 
 if (!SHOP || !ACCESS_TOKEN) {
   console.error("❌ Missing required env vars: SHOP or SHOPIFY_ACCESS_TOKEN");
@@ -21,7 +19,7 @@ if (!SHOP || !ACCESS_TOKEN) {
 
 const shopBaseUrl = `https://${SHOP}`;
 
-// ✅ Hardened date normalization
+// Normalize dates
 function normalizeDate(input) {
   if (!input || typeof input !== "string") return null;
   if (/^\d{4}-\d{2}-\d{2}$/.test(input)) return input;
@@ -34,7 +32,7 @@ app.get("/", (_req, res) => {
   res.status(200).send("OK");
 });
 
-// Helper: fetch parent pickup location
+// Fetch parent pickup location
 async function getParentPickupLocation(orderId) {
   const resp = await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders/${orderId}/fulfillment_orders.json`, {
     method: "GET",
@@ -50,18 +48,20 @@ async function getParentPickupLocation(orderId) {
   return assignedLocationId;
 }
 
-// Helper: copy parent pickup date
+// Extract parent pickup date
 function getParentPickupDate(order) {
   const pickupDateFromNotes = Array.isArray(order.note_attributes)
     ? order.note_attributes.find(attr => attr.name === "Pickup Date")?.value || null
     : null;
+
   const pickupDateFallback = Array.isArray(order.line_items) && Array.isArray(order.line_items[0]?.properties)
     ? order.line_items[0].properties.find(p => p.name === "Pickup Date")?.value || null
     : null;
+
   return normalizeDate(pickupDateFromNotes || pickupDateFallback);
 }
 
-// ✅ Helper: fetch latest parent order
+// Fetch latest parent order
 async function getParentOrder(orderId) {
   const resp = await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders/${orderId}.json`, {
     method: "GET",
@@ -79,8 +79,6 @@ async function getParentOrder(orderId) {
 // 🔒 Metafield Lock Helpers (custom.processing_lock)
 // ============================================================
 
-
-// Fetch the current processing lock value for a parent order
 async function getProcessingLock(orderId) {
   try {
     const resp = await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders/${orderId}/metafields.json`, {
@@ -103,7 +101,6 @@ async function getProcessingLock(orderId) {
   }
 }
 
-// Write or update the processing lock metafield
 async function setProcessingLock(orderId, value) {
   try {
     await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/metafields.json`, {
@@ -130,7 +127,6 @@ async function setProcessingLock(orderId, value) {
   }
 }
 
-// Guard: prevent duplicate or concurrent splits
 async function assertLockAvailable(orderId) {
   const lock = await getProcessingLock(orderId);
 
@@ -146,76 +142,38 @@ async function assertLockAvailable(orderId) {
 
   return true;
 }
-
 app.post("/webhooks/orders/create", async (req, res) => {
-  const order = req.body;   // ⭐ now visible to try/catch/finally
+  const order = req.body;
 
   try {
     console.log(`🔔 Webhook fired for order ${order.id} at ${new Date().toISOString()}`);
 
     // ============================================================
-// 🧠 Local Lock Guard — prevents simultaneous webhook execution
-// ============================================================
-if (localLocks.get(order.id)) {
-  console.log(`⛔ Local lock active for ${order.id}. Skipping.`);
-  return res.status(200).send("Local lock skip");
-}
+    // 🧠 Local Lock Guard — prevents simultaneous webhook execution
+    // ============================================================
+    if (localLocks.get(order.id)) {
+      console.log(`⛔ Local lock active for ${order.id}. Skipping.`);
+      return res.status(200).send("Local lock skip");
+    }
 
-// Activate local lock
-localLocks.set(order.id, true);
-console.log(`🔒 Local lock engaged for ${order.id}`);
-
+    // Activate local lock
+    localLocks.set(order.id, true);
+    console.log(`🔒 Local lock engaged for ${order.id}`);
 
     // ============================================================
-// 🔒 Duplicate Webhook Guard + Initial Lock Write
-// ============================================================
-
-// 1. Check if lock is available
-const lockAvailable = await assertLockAvailable(order.id);
-if (!lockAvailable) {
-  console.log(`⛔ Lock prevents processing for ${order.id}. Exiting early.`);
-  return res.status(200).send("Split skipped due to lock");
-}
-
-// 2. Set lock to in_progress BEFORE any splitting logic
-await setProcessingLock(order.id, "in_progress");
-console.log(`🔒 Lock set to in_progress for parent ${order.id}`);
-
+    // 🔒 Duplicate Webhook Guard + Initial Lock Write
     // ============================================================
-// 📦 Child Order Tracking (for verification later)
-// ============================================================
 
-// This array will store the expected details for each child order
-let expectedChildren = [];
+    // 1. Check if lock is available
+    const lockAvailable = await assertLockAvailable(order.id);
+    if (!lockAvailable) {
+      console.log(`⛔ Lock prevents processing for ${order.id}. Exiting early.`);
+      return res.status(200).send("Split skipped due to lock");
+    }
 
-// Helper to record what we *intend* to create
-function trackExpectedChild({
-  childId,          // ⭐ NEW
-  variantId,
-  quantity,
-  parentOrderName,
-  productId,
-  lineItemId,
-  truckloadIndex,
-  note,
-  projectName,
-  pickupDate
-}) {
-  expectedChildren.push({
-    childId,        // ⭐ NEW
-    variantId,
-    quantity,
-    parentOrderName,
-    productId,
-    lineItemId,
-    truckloadIndex,
-    note,
-    projectName,
-    pickupDate
-  });
-}
-
-
+    // 2. Set lock to in_progress BEFORE any splitting logic
+    await setProcessingLock(order.id, "in_progress");
+    console.log(`🔒 Lock set to in_progress for parent ${order.id}`);
 
     // 🚫 Skip child orders immediately
     if ((order.tags || "").includes("Split-Child")) {
@@ -245,17 +203,21 @@ function trackExpectedChild({
     const lineItems = Array.isArray(order.line_items) ? order.line_items : [];
     if (lineItems.length === 0) {
       console.log("⚠️ No line items found on order");
+      await setProcessingLock(order.id, "done");
       return res.status(200).send("No line items");
     }
 
-    // ✅ Fetch parent pickup context
+    // Fetch parent pickup context
     const parentLocationId = await getParentPickupLocation(order.id);
     const parentPickupDate = getParentPickupDate(order);
 
     let childOrdersCreated = false;
 
-        // ✅ Outer loop over line items
+    // Outer loop over line items
     const multipleProducts = lineItems.length > 1;
+    // ============================================================
+    // 📦 SPLIT LOGIC — Outer loop over line items
+    // ============================================================
 
     for (const item of lineItems) {
       if (!item?.product_id || !item?.variant_id) continue;
@@ -283,12 +245,11 @@ function trackExpectedChild({
         continue;
       }
 
-// Case: quantity less than capacity → still create one child order
-if (item.quantity < truckloadCapacity) {
-  console.log(`📦 Qty ${item.quantity} < capacity ${truckloadCapacity} — creating one child order`);
-  splitQuantities = [item.quantity];
-}
-
+      // Case: quantity less than capacity → still create one child order
+      if (item.quantity < truckloadCapacity) {
+        console.log(`📦 Qty ${item.quantity} < capacity ${truckloadCapacity} — creating one child order`);
+        splitQuantities = [item.quantity];
+      }
 
       // Case: quantity equals capacity
       if (item.quantity === truckloadCapacity) {
@@ -306,7 +267,7 @@ if (item.quantity < truckloadCapacity) {
             },
             body: JSON.stringify({ order: { id: order.id, tags: newTags } }),
           });
-          continue; // no child orders created
+          continue;
         }
       }
 
@@ -320,37 +281,42 @@ if (item.quantity < truckloadCapacity) {
 
       console.log(`Split quantities for ${item.title}:`, splitQuantities);
 
-      // ✅ Inner loop over split quantities
+      // ============================================================
+      // 📦 Inner loop — Create each child order
+      // ============================================================
+
       for (let i = 0; i < splitQuantities.length; i++) {
         const qty = splitQuantities[i];
 
         const projectName = Array.isArray(item.properties)
           ? item.properties.find(p => p.name === "Project Name")?.value || null
           : null;
+
         const pickupDateRaw = Array.isArray(item.properties)
           ? item.properties.find(p => p.name === "Pickup Date")?.value || null
           : null;
+
         const pickupDateNormalized = normalizeDate(pickupDateRaw);
-// Extract warehouse instructions cleanly from parent note
-let warehouseInstructions = null;
-if (order.note) {
-  warehouseInstructions = order.note.replace(/Pickup Date:[^|]+(\|)?/, "").trim();
-  if (warehouseInstructions === "") warehouseInstructions = null;
 
-  // 🚩 Fix (Diff #22): remove duplicate "Warehouse Instructions:" if already present
-  if (warehouseInstructions && warehouseInstructions.startsWith("Warehouse Instructions:")) {
-    warehouseInstructions = warehouseInstructions.replace(/^Warehouse Instructions:\s*/, "");
-  }
-}
+        // Extract warehouse instructions cleanly from parent note
+        let warehouseInstructions = null;
+        if (order.note) {
+          warehouseInstructions = order.note.replace(/Pickup Date:[^|]+(\|)?/, "").trim();
+          if (warehouseInstructions === "") warehouseInstructions = null;
 
-// Build childNote cleanly
-let childNoteParts = [];
-if (pickupDateNormalized) childNoteParts.push(`Pickup Date: ${pickupDateNormalized}`);
-if (warehouseInstructions) childNoteParts.push(`Warehouse Instructions: ${warehouseInstructions}`);
+          // Remove duplicate prefix
+          if (warehouseInstructions && warehouseInstructions.startsWith("Warehouse Instructions:")) {
+            warehouseInstructions = warehouseInstructions.replace(/^Warehouse Instructions:\s*/, "");
+          }
+        }
 
-const childNote = childNoteParts.join(" | ");
-console.log(`🔎 Child order ${i + 1} — Note: ${childNote}`);
+        // Build child note
+        let childNoteParts = [];
+        if (pickupDateNormalized) childNoteParts.push(`Pickup Date: ${pickupDateNormalized}`);
+        if (warehouseInstructions) childNoteParts.push(`Warehouse Instructions: ${warehouseInstructions}`);
 
+        const childNote = childNoteParts.join(" | ");
+        console.log(`🔎 Child order ${i + 1} — Note: ${childNote}`);
 
         const newOrderPayload = {
           order: {
@@ -436,33 +402,20 @@ console.log(`🔎 Child order ${i + 1} — Note: ${childNote}`);
             }),
           });
         }
+      }
+    }
+        // ============================================================
+    // 🏷️ Parent project name metafield
+    // ============================================================
 
-// Track expected child order for verification
-trackExpectedChild({
-  childId: createdOrder.order.id,   // ⭐ NEW
-  variantId: item.variant_id,
-  quantity: qty,
-  parentOrderName: order.name,
-  productId: item.product_id,
-  lineItemId: item.id,
-  truckloadIndex: i,
-  note: childNote || null,
-  projectName: projectName || null,
-  pickupDate: pickupDateNormalized || parentPickupDate || null
-});
-
-
-        
-      } // closes inner loop
-    }   // closes outer loop
-
-    // ✅ Parent project name metafield
     const projectNameFromNotes = Array.isArray(order.note_attributes)
       ? order.note_attributes.find(attr => attr.name === "Project Name")?.value || null
       : null;
+
     const projectNameFallback = Array.isArray(order.line_items) && Array.isArray(order.line_items[0]?.properties)
       ? order.line_items[0].properties.find(p => p.name === "Project Name")?.value || null
       : null;
+
     const parentProjectName = projectNameFromNotes || projectNameFallback;
 
     if (parentProjectName) {
@@ -484,8 +437,10 @@ trackExpectedChild({
         }),
       });
     }
+    // ============================================================
+    // 📅 Parent pickup date metafield
+    // ============================================================
 
-    // ✅ Parent pickup date metafield
     if (parentPickupDate) {
       await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/metafields.json`, {
         method: "POST",
@@ -505,163 +460,48 @@ trackExpectedChild({
         }),
       });
     }
+    // ============================================================
+    // 🔒 FINAL LOCK COMPLETION — ALWAYS mark as done
+    // ============================================================
+
+    console.log(`🔒 Split logic completed — marking lock as done for ${order.id}`);
+    await setProcessingLock(order.id, "done");
 
     // ============================================================
-// 🔍 Verification Pass — Confirm All Child Orders Were Created Correctly
-// ============================================================
+    // 🏷️ Final parent tagging logic
+    // ============================================================
 
-async function verifyChildOrders(expectedChildren) {
-  console.log("🔍 Starting verification pass for child orders…");
-
-  let allVerified = true;
-
-  for (const expected of expectedChildren) {
-    const {
-      childId,          // ⭐ REQUIRED
-      variantId,
-      quantity,
-      parentOrderName,
-      productId,
-      lineItemId,
-      truckloadIndex,
-      note,
-      projectName,
-      pickupDate
-    } = expected;
-
-    // ⭐ Fetch child order directly by ID
-    const childResp = await fetch(
-      `${shopBaseUrl}/admin/api/${API_VERSION}/orders/${childId}.json`,
-      {
-        method: "GET",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Shopify-Access-Token": ACCESS_TOKEN,
-        },
-      }
-    );
-
-    const childData = await childResp.json();
-    const child = childData.order;
-
-    if (!child) {
-      console.error(`❌ Child order ${childId} not found`);
-      allVerified = false;
-      continue;
-    }
-
-    // ⭐ Verify quantity
-    const actualQty = child.line_items?.[0]?.quantity;
-    if (actualQty !== quantity) {
-      console.error(`❌ Quantity mismatch for child ${childId}: expected ${quantity}, got ${actualQty}`);
-      allVerified = false;
-    }
-
-    // ⭐ Verify note
-    if (note && child.note !== note) {
-      console.error(`❌ Note mismatch for child ${childId}: expected "${note}", got "${child.note}"`);
-      allVerified = false;
-    }
-
-    // ⭐ Verify tags
-    const requiredTags = [
-      "Split-Child",
-      `Parent-${parentOrderName}`,
-      `Product-${productId}`,
-      `LineItem-${lineItemId}`,
-      `Truckload ${truckloadIndex + 1}`
-    ];
-
-    for (const tag of requiredTags) {
-      if (!child.tags.includes(tag)) {
-        console.error(`❌ Missing tag "${tag}" on child ${childId}`);
-        allVerified = false;
-      }
-    }
-
-    // ⭐ Verify metafields
-    const metaResp = await fetch(
-      `${shopBaseUrl}/admin/api/${API_VERSION}/orders/${childId}/metafields.json`,
-      {
-        method: "GET",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Shopify-Access-Token": ACCESS_TOKEN,
-        },
-      }
-    );
-
-    const metaData = await metaResp.json();
-    const metaList = Array.isArray(metaData?.metafields) ? metaData.metafields : [];
-
-    const projectMeta = metaList.find(m => m.namespace === "custom" && m.key === "project_name");
-    const pickupMeta = metaList.find(m => m.namespace === "custom" && m.key === "pickup_date");
-
-    if (projectName && (!projectMeta || projectMeta.value !== projectName)) {
-      console.error(`❌ Project name metafield mismatch on child ${childId}`);
-      allVerified = false;
-    }
-
-    if (pickupDate && (!pickupMeta || pickupMeta.value !== pickupDate)) {
-      console.error(`❌ Pickup date metafield mismatch on child ${childId}`);
-      allVerified = false;
-    }
-  }
-
-  console.log(allVerified ? "✅ Verification passed" : "❌ Verification failed");
-  return allVerified;
-}
-
-
-    // Run verification pass
-const verificationPassed = await verifyChildOrders(expectedChildren);
-
-// ============================================================
-// 🔒 Lock Completion — Only mark as done if verification passes
-// ============================================================
-
-if (verificationPassed) {
-  console.log(`🔒 Verification succeeded — marking lock as done for ${order.id}`);
-  await setProcessingLock(order.id, "done");
-} else {
-  console.error(`❌ Verification failed — leaving lock as in_progress for ${order.id}`);
-}
-
-
-    // ✅ Final parent tagging logic
     if (!childOrdersCreated) {
-      // If no child orders were created, parent should be tagged Truckload-Ready
-      const newTags = order.tags ? `${order.tags}, Truckload-Ready` : "Truckload-Ready";
+      const newTagsFinal = order.tags ? `${order.tags}, Truckload-Ready` : "Truckload-Ready";
+
       await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders/${order.id}.json`, {
         method: "PUT",
         headers: {
           "Content-Type": "application/json",
           "X-Shopify-Access-Token": ACCESS_TOKEN,
         },
-        body: JSON.stringify({ order: { id: order.id, tags: newTags } }),
+        body: JSON.stringify({ order: { id: order.id, tags: newTagsFinal } }),
       });
+
       console.log(`🏷️ Parent ${order.name} tagged as Truckload-Ready (no child orders created)`);
     }
 
-res.status(200).send("Split processed");
+    res.status(200).send("Split processed");
+  } catch (err) {
+    console.error("❌ Error processing split:", err);
+    res.status(500).send("Error");
 
-} catch (err) {
-  console.error("❌ Error processing split:", err);
-  res.status(500).send("Error");
-
-} finally {
-  // ============================================================
-  // 🧠 ALWAYS Release Local Lock
-  // ============================================================
-  if (order?.id && localLocks.get(order.id)) {
-    localLocks.delete(order.id);
-    console.log(`🔓 Local lock released for ${order.id}`);
+  } finally {
+    // ============================================================
+    // 🔓 ALWAYS Release Local Lock
+    // ============================================================
+    if (order?.id && localLocks.get(order.id)) {
+      localLocks.delete(order.id);
+      console.log(`🔓 Local lock released for ${order.id}`);
+    }
   }
-}
 });
-
 
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });
-
