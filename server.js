@@ -142,11 +142,25 @@ async function assertLockAvailable(orderId) {
 
   return true;
 }
-app.post("/webhooks/orders/create", async (req, res) => {
-  const order = req.body;
+app.post("/webhook/orders/create", async (req, res) => {
+    const order = req.body;
+    console.log(`🔔 Webhook fired for order ${order.id}`);
 
-  try {
-    console.log(`🔔 Webhook fired for order ${order.id} at ${new Date().toISOString()}`);
+    // 🚧 Diff Entry #23 — Prevent child webhooks from interrupting parent split
+    // This must run BEFORE any splitting logic.
+
+    // 1. If this order is a child, skip immediately.
+    if (order.tags && order.tags.includes("Split-Child")) {
+        console.log(`↩️ Child order ${order.id} detected at webhook entry. Skipping.`);
+        return res.status(200).send("Child order skipped");
+    }
+
+    // 2. If the parent split is already in progress, skip ALL webhooks except the parent itself.
+    const lockState = await getProcessingLock(order.id);
+if (lockState === "in_progress" && !order.tags?.some(t => t.startsWith("Parent-#"))) {
+        console.log(`⛔ Split already in progress for ${order.id}. Skipping webhook.`);
+        return res.status(200).send("Parent split in progress");
+    }
 
     // ============================================================
     // 🧠 Local Lock Guard — prevents simultaneous webhook execution
