@@ -142,9 +142,20 @@ async function assertLockAvailable(orderId) {
 
   return true;
 }
+
 app.post("/webhook/orders/create", async (req, res) => {
+  const order = req.body;   // <— moved OUTSIDE try so it's always defined
+    // Normalize Shopify tags into an array
+  const tagsArray = Array.isArray(order.tags)
+    ? order.tags
+    : typeof order.tags === "string"
+      ? order.tags.split(",").map(t => t.trim())
+      : [];
+
   try {
-    const order = req.body;
+     console.log(`🔔 Webhook fired for order ${order.id}`);
+
+
     console.log(`🔔 Webhook fired for order ${order.id}`);
 
     // 🚧 Diff Entry #23 — Prevent child webhooks from interrupting parent split
@@ -158,7 +169,7 @@ app.post("/webhook/orders/create", async (req, res) => {
 
     // 2. If the parent split is already in progress, skip ALL webhooks except the parent itself.
     const lockState = await getProcessingLock(order.id);
-if (lockState === "in_progress" && !order.tags?.some(t => t.startsWith("Parent-#"))) {
+if (lockState === "in_progress" && !tagsArray.some(t => t.startsWith("Parent-#"))) {
         console.log(`⛔ Split already in progress for ${order.id}. Skipping webhook.`);
         return res.status(200).send("Parent split in progress");
     }
