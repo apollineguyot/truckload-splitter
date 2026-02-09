@@ -143,20 +143,39 @@ async function assertLockAvailable(orderId) {
   return true;
 }
 
-app.post("/webhook/orders/create", async (req, res) => {
-  const order = req.body;   // <— moved OUTSIDE try so it's always defined
-    // Normalize Shopify tags into an array
-  const tagsArray = Array.isArray(order.tags)
-    ? order.tags
-    : typeof order.tags === "string"
-      ? order.tags.split(",").map(t => t.trim())
-      : [];
+ app.post("/webhook/orders/create", async (req, res) => {
+   const order = req.body;
 
-  try {
+  // ============================================================
+  // ⚠️ SAFETY GUARD — malformed or empty webhook payload
+  // ============================================================
+  if (!order || !order.id) {
+    console.log("⚠️ Webhook received with no order payload. Skipping.");
+    return res.status(200).send("No order payload");
+  }
+
+  // ============================================================
+  // 🔒 EARLY LOCAL LOCK — MUST BE FIRST, BEFORE ANY AWAIT
+  // ============================================================
+  if (localLocks.get(order.id)) {
+    console.log(`⛔ Local lock active for ${order.id}. Skipping.`);
+    return res.status(200).send("Local lock skip");
+  }
+
+  localLocks.set(order.id, true);
+  console.log(`🔒 Local lock engaged for ${order.id}`);
+
+
+   // Normalize Shopify tags into an array
+   const tagsArray = Array.isArray(order.tags)
+     ? order.tags
+     : typeof order.tags === "string"
+       ? order.tags.split(",").map(t => t.trim())
+       : [];
+
+   try {
      console.log(`🔔 Webhook fired for order ${order.id}`);
 
-
-    console.log(`🔔 Webhook fired for order ${order.id}`);
 
     // 🚧 Diff Entry #23 — Prevent child webhooks from interrupting parent split
     // This must run BEFORE any splitting logic.
@@ -174,17 +193,6 @@ if (lockState === "in_progress" && !tagsArray.some(t => t.startsWith("Parent-#")
         return res.status(200).send("Parent split in progress");
     }
 
-    // ============================================================
-    // 🧠 Local Lock Guard — prevents simultaneous webhook execution
-    // ============================================================
-    if (localLocks.get(order.id)) {
-      console.log(`⛔ Local lock active for ${order.id}. Skipping.`);
-      return res.status(200).send("Local lock skip");
-    }
-
-    // Activate local lock
-    localLocks.set(order.id, true);
-    console.log(`🔒 Local lock engaged for ${order.id}`);
 
     // ============================================================
     // 🔒 Duplicate Webhook Guard + Initial Lock Write
