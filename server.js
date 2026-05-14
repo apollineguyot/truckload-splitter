@@ -322,35 +322,30 @@ if (lockState === "in_progress" && !tagsArray.some(t => t.startsWith("Parent-#")
       for (let i = 0; i < splitQuantities.length; i++) {
         const qty = splitQuantities[i];
 
-        const projectName = Array.isArray(item.properties)
-          ? item.properties.find(p => p.name === "Project Name")?.value || null
-          : null;
+const projectName = Array.isArray(item.properties)
+  ? item.properties.find(p => p.name === "Project Name")?.value || null
+  : null;
 
-        const pickupDateRaw = Array.isArray(item.properties)
-          ? item.properties.find(p => p.name === "Pickup Date")?.value || null
-          : null;
+const pickupDateRaw = Array.isArray(item.properties)
+  ? item.properties.find(p => p.name === "Pickup Date")?.value || null
+  : null;
 
-        const pickupDateNormalized = normalizeDate(pickupDateRaw);
+const pickupDateNormalized = normalizeDate(pickupDateRaw);
 
-        // Extract warehouse instructions cleanly from parent note
-        let warehouseInstructions = null;
-        if (order.note) {
-          warehouseInstructions = order.note.replace(/Pickup Date:[^|]+(\|)?/, "").trim();
-          if (warehouseInstructions === "") warehouseInstructions = null;
+// 🔹 Extract per‑item warehouse instructions from line item property "Customer Note"
+const warehouseInstructionsRaw = Array.isArray(item.properties)
+  ? item.properties.find(p => p.name === "Customer Note")?.value || null
+  : null;
 
-          // Remove duplicate prefix
-          if (warehouseInstructions && warehouseInstructions.startsWith("Warehouse Instructions:")) {
-            warehouseInstructions = warehouseInstructions.replace(/^Warehouse Instructions:\s*/, "");
-          }
-        }
+const warehouseInstructions = warehouseInstructionsRaw?.trim() || null;
 
-        // Build child note
-        let childNoteParts = [];
-        if (pickupDateNormalized) childNoteParts.push(`Pickup Date: ${pickupDateNormalized}`);
-        if (warehouseInstructions) childNoteParts.push(`Warehouse Instructions: ${warehouseInstructions}`);
+// Build child note using per‑item data
+let childNoteParts = [];
+if (pickupDateNormalized) childNoteParts.push(`Pickup Date: ${pickupDateNormalized}`);
+if (warehouseInstructions) childNoteParts.push(`Warehouse Instructions: ${warehouseInstructions}`);
 
-        const childNote = childNoteParts.join(" | ");
-        console.log(`🔎 Child order ${i + 1} — Note: ${childNote}`);
+const childNote = childNoteParts.join(" | ");
+console.log(`🔎 Child order ${i + 1} — Note: ${childNote}`);
 
         const newOrderPayload = {
           order: {
