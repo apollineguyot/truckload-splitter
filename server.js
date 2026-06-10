@@ -19,6 +19,60 @@ if (!SHOP || !ACCESS_TOKEN) {
 
 const shopBaseUrl = `https://${SHOP}`;
 
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function shopifyFetch(url, options = {}, retries = 5) {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const resp = await fetch(url, options);
+
+    const text = await resp.text();
+    let data = null;
+
+    try {
+      data = text ? JSON.parse(text) : null;
+    } catch {
+      data = text;
+    }
+
+    if (resp.ok) {
+      return data;
+    }
+
+    const retryAfterHeader = resp.headers.get("retry-after");
+    const retryAfterMs = retryAfterHeader
+      ? Number(retryAfterHeader) * 1000
+      : null;
+
+    const shouldRetry =
+      resp.status === 429 ||
+      resp.status === 500 ||
+      resp.status === 502 ||
+      resp.status === 503 ||
+      resp.status === 504;
+
+    console.error("❌ Shopify API request failed:", {
+      url,
+      status: resp.status,
+      statusText: resp.statusText,
+      attempt,
+      retries,
+      response: data,
+    });
+
+    if (!shouldRetry || attempt === retries) {
+      throw new Error(`Shopify API failed with status ${resp.status}: ${JSON.stringify(data)}`);
+    }
+
+    const waitMs = retryAfterMs || 1000 * (attempt + 1);
+    console.log(`⏳ Retrying Shopify request in ${waitMs}ms...`);
+    await sleep(waitMs);
+  }
+}
+
+
+
 // Normalize dates
 function normalizeDate(input) {
   if (!input || typeof input !== "string") return null;
@@ -83,6 +137,7 @@ async function getProcessingLock(orderId) {
   try {
     const resp = await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders/${orderId}/metafields.json`, {
       method: "GET",
+      
       headers: {
         "Content-Type": "application/json",
         "X-Shopify-Access-Token": ACCESS_TOKEN,
@@ -103,7 +158,7 @@ async function getProcessingLock(orderId) {
 
 async function setProcessingLock(orderId, value) {
   try {
-    await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/metafields.json`, {
+    await shopifyFetch(`${shopBaseUrl}/admin/api/${API_VERSION}/metafields.json`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -224,7 +279,7 @@ if (lockState === "in_progress" && !tagsArray.some(t => t.startsWith("Parent-#")
 
     // 🏷️ Tag parent immediately to prevent duplicate splits
     const newTags = order.tags ? `${order.tags}, Split-Processed` : "Split-Processed";
-    await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders/${order.id}.json`, {
+    await shopifyFetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders/${order.id}.json`, {
       method: "PUT",
       headers: {
         "Content-Type": "application/json",
@@ -290,19 +345,21 @@ if (lockState === "in_progress" && !tagsArray.some(t => t.startsWith("Parent-#")
         if (multipleProducts) {
           console.log(`✅ Equal capacity for ${item.title}, creating one child order since parent has multiple products`);
           splitQuantities = [item.quantity];
-        } else {
-          console.log(`🏷️ Parent-only product ${item.title} at capacity, tagging parent as Truckload-Ready`);
-          const newTags = order.tags ? `${order.tags}, Truckload-Ready` : "Truckload-Ready";
-          await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders/${order.id}.json`, {
-            method: "PUT",
-            headers: {
-              "Content-Type": "application/json",
-              "X-Shopify-Access-Token": ACCESS_TOKEN,
-            },
-            body: JSON.stringify({ order: { id: order.id, tags: newTags } }),
-          });
-          continue;
-        }
+} else {
+  console.log(`🏷️ Parent-only product ${item.title} at capacity, tagging parent as Truckload-Ready`);
+  const newTags = order.tags ? `${order.tags}, Truckload-Ready` : "Truckload-Ready";
+
+  await shopifyFetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders/${order.id}.json`, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Shopify-Access-Token": ACCESS_TOKEN,
+    },
+    body: JSON.stringify({ order: { id: order.id, tags: newTags } }),
+  });
+
+  continue;
+}
       }
 
       // Case: quantity greater than capacity → normal split
@@ -374,24 +431,34 @@ console.log(`🔎 Child order ${i + 1} — Note: ${childNote}`);
 
         console.log("🧾 Creating child order payload:", JSON.stringify(newOrderPayload, null, 2));
 
-        const createResp = await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders.json`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "X-Shopify-Access-Token": ACCESS_TOKEN,
-          },
-          body: JSON.stringify(newOrderPayload),
-        });
+const createdOrder = await shopifyFetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders.json`, {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    "X-Shopify-Access-Token": ACCESS_TOKEN,
+  },
+  body: JSON.stringify(newOrderPayload),
+});
 
-        const createdOrder = await createResp.json();
-        if (!createResp.ok || !createdOrder.order?.id) continue;
+if (!createdOrder.order?.id) {
+  console.error("❌ Child order creation returned no order id:", {
+    parentOrderId: order.id,
+    parentOrderName: order.name,
+    productId: item.product_id,
+    variantId: item.variant_id,
+    quantity: qty,
+    response: createdOrder,
+  });
 
+  throw new Error(`Child order creation returned no order id for ${item.title}, qty ${qty}`);
+}
+        
         console.log(`✅ Created child order ${createdOrder.order.id} with tags: ${createdOrder.order.tags}`);
         childOrdersCreated = true;
 
         // Attach project name metafield
         if (projectName) {
-          await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/metafields.json`, {
+        await shopifyFetch(`${shopBaseUrl}/admin/api/${API_VERSION}/metafields.json`, {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
@@ -413,7 +480,7 @@ console.log(`🔎 Child order ${i + 1} — Note: ${childNote}`);
         // Attach pickup date metafield
         const effectivePickupDate = pickupDateNormalized || parentPickupDate;
         if (effectivePickupDate) {
-          await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/metafields.json`, {
+        await shopifyFetch(`${shopBaseUrl}/admin/api/${API_VERSION}/metafields.json`, {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
@@ -431,8 +498,12 @@ console.log(`🔎 Child order ${i + 1} — Note: ${childNote}`);
             }),
           });
         }
+
+     await sleep(500);
       }
     }
+     
+     
         // ============================================================
     // 🏷️ Parent project name metafield
     // ============================================================
@@ -448,7 +519,7 @@ console.log(`🔎 Child order ${i + 1} — Note: ${childNote}`);
     const parentProjectName = projectNameFromNotes || projectNameFallback;
 
     if (parentProjectName) {
-      await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/metafields.json`, {
+      await shopifyFetch(`${shopBaseUrl}/admin/api/${API_VERSION}/metafields.json`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -471,7 +542,7 @@ console.log(`🔎 Child order ${i + 1} — Note: ${childNote}`);
     // ============================================================
 
     if (parentPickupDate) {
-      await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/metafields.json`, {
+      await shopifyFetch(`${shopBaseUrl}/admin/api/${API_VERSION}/metafields.json`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -503,7 +574,7 @@ console.log(`🔎 Child order ${i + 1} — Note: ${childNote}`);
     if (!childOrdersCreated) {
       const newTagsFinal = order.tags ? `${order.tags}, Truckload-Ready` : "Truckload-Ready";
 
-      await fetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders/${order.id}.json`, {
+      await shopifyFetch(`${shopBaseUrl}/admin/api/${API_VERSION}/orders/${order.id}.json`, {
         method: "PUT",
         headers: {
           "Content-Type": "application/json",
@@ -516,11 +587,17 @@ console.log(`🔎 Child order ${i + 1} — Note: ${childNote}`);
     }
 
     res.status(200).send("Split processed");
-  } catch (err) {
-    console.error("❌ Error processing split:", err);
-    res.status(500).send("Error");
+} catch (err) {
+  console.error("❌ Error processing split:", err);
 
-  } finally {
+  if (order?.id) {
+    await setProcessingLock(order.id, "failed");
+    console.log(`🔒 Lock for order ${order.id} set to failed`);
+  }
+
+  res.status(500).send("Error");
+
+} finally {
     // ============================================================
     // 🔓 ALWAYS Release Local Lock
     // ============================================================
